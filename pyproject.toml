@@ -1,0 +1,12 @@
+[project]
+name = "handpilot"
+version = "0.1.0"
+description = "Local, privacy-first, real-time hand-gesture controller for Windows."
+readme = "README.md"
+requires-python = ">=3.12,<3.15"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-v"
+

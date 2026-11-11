@@ -1,4 +1,4 @@
-"""Typed data structures shared between camera, vision, controller, and UI."""
+"""Typed data structures shared between camera, vision, input, controller, and UI."""
 
 from __future__ import annotations
 
@@ -15,6 +15,15 @@ class CameraStatus(str, Enum):
     STARTING = "Starting"
     RUNNING = "Running"
     ERROR = "Error"
+
+
+class ControlMode(str, Enum):
+    """Cursor control mode reported by the pipeline."""
+
+    DISABLED = "Preview Only"
+    STANDBY = "Standby (No Extended Index)"
+    CURSOR = "Cursor Tracking"
+    EMERGENCY_STOPPED = "Emergency Stopped (Esc)"
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +54,17 @@ class HandDetection:
 
 
 @dataclass(frozen=True, slots=True)
+class CursorState:
+    """Computed cursor tracking and mapping state for the current frame."""
+
+    mode: ControlMode
+    index_extended: bool
+    fingertip: NormalizedPoint | None
+    mapped_position: tuple[int, int] | None
+    os_input_active: bool
+
+
+@dataclass(frozen=True, slots=True)
 class TrackingResult:
     """Per-frame tracking output published from VisionWorker to the controller/UI."""
 
@@ -54,4 +74,4 @@ class TrackingResult:
     camera_fps: float
     tracking_fps: float
     error: str | None = None
-
+    cursor_state: CursorState | None = None

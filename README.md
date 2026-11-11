@@ -2,15 +2,17 @@
 
 Local, privacy-first, real-time hand-gesture controller for Windows.
 
-> **Current Stage:** Phase 0 & Phase 1 (Webcam + MediaPipe Hand Landmark Tracking Preview).  
-> OS-level mouse and keyboard input is **disabled** in this phase.
+> **Current Stage:** Phase 2 (Virtual Mouse Movement via Index Fingertip).  
+> OS-level mouse control is **disabled by default** (`os_input_enabled = False`) and requires explicit activation in the UI. Clicks, dragging, and scrolling are not implemented yet.
 
-## Architecture (Phase 1)
+## Architecture (Phase 1 & 2)
 
 - `camera/`: `CameraManager` captures frames on a background thread into a bounded single-slot `LatestFrameBuffer` so stale frames are dropped rather than queued.
-- `vision/`: `HandLandmarkerService` wraps the MediaPipe Hand Landmarker Tasks API (`RunningMode.VIDEO`), and `VisionWorker` processes the newest available frame off the UI thread.
-- `ui/`: `MainWindow` and `CameraView` render the live webcam feed, 21-landmark hand overlay, camera/hand status, and FPS on the Qt main thread.
-- `app/`: `AppController`, `AppConfig`, `events`, and `application` coordinate lifecycle, error handling, and clean shutdown.
+- `vision/`: `HandLandmarkerService` wraps the MediaPipe Hand Landmarker Tasks API (`RunningMode.VIDEO`), `VisionWorker` processes the newest frame off the UI thread, `landmark_features` extracts landmark `8` and validates index extension (`5, 6, 7, 8`), and `coordinate_mapper` maps the calibrated active region to clamped screen pixels.
+- `input_control/`: `InputBackend` interface with `MockInputBackend` (safe testing) and `DesktopInputBackend` (PyAutoGUI), gated by `InputDispatcher`.
+- `utils/`: `ExponentialSmoother` for cursor smoothing and `logging_config` for local logging.
+- `ui/`: `MainWindow` and `CameraView` render the live webcam feed, active cursor region, 21-landmark overlay, calibration/sensitivity/smoothing sliders, explicit OS control toggle, and `Esc` emergency stop.
+- `app/`: `AppController`, `AppConfig`, `events`, and `application` coordinate lifecycle, `Esc` emergency stop, error handling, and clean shutdown.
 
 ## Setup (Windows, Python 3.14.4)
 

@@ -1,4 +1,4 @@
-"""Live webcam preview widget with crisp 21-landmark Qt overlay."""
+"""Live webcam preview widget with crisp 21-landmark and active-region Qt overlay."""
 
 from __future__ import annotations
 
@@ -8,29 +8,42 @@ from PySide6.QtGui import QColor, QImage, QPainter, QPaintEvent, QPen
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from app.events import HandDetection
+from vision.coordinate_mapper import ActiveRegion
 from vision.hand_landmarker import HAND_CONNECTIONS
+from vision.landmark_features import INDEX_TIP
 
 FINGERTIP_INDICES = frozenset({4, 8, 12, 16, 20})
 WRIST_INDEX = 0
 
 
 class CameraView(QWidget):
-    """Renders the latest RGB video frame and optional 21 hand landmarks."""
+    """Renders the latest RGB video frame, active region box, and 21 hand landmarks."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._image: QImage | None = None
         self._detection: HandDetection | None = None
         self._show_landmarks: bool = True
+        self._active_region: ActiveRegion | None = ActiveRegion()
+        self._index_extended: bool = False
+        self._os_control_active: bool = False
         self._placeholder_text: str = (
             "Camera is stopped.\nClick 'Start Camera' to preview webcam & 21 hand landmarks."
         )
 
-        self.setMinimumSize(640, 480)
+        self.setMinimumSize(640, 440)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-    def update_frame(self, frame_rgb: np.ndarray, detection: HandDetection | None) -> None:
-        """Update the displayed RGB frame and hand detection on the UI thread."""
+    def update_frame(
+        self,
+        frame_rgb: np.ndarray,
+        detection: HandDetection | None,
+        *,
+        active_region: ActiveRegion | None = None,
+        index_extended: bool = False,
+        os_control_active: bool = False,
+    ) -> None:
+        """Update the displayed RGB frame and tracking overlay on the UI thread."""
         height, width, channels = frame_rgb.shape
         if channels != 3:
             return
@@ -44,16 +57,29 @@ class CameraView(QWidget):
             QImage.Format.Format_RGB888,
         ).copy()
         self._detection = detection
+        if active_region is not None:
+            self._active_region = active_region
+        self._index_extended = index_extended
+        self._os_control_active = os_control_active
         self.update()
 
     def set_show_landmarks(self, enabled: bool) -> None:
         self._show_landmarks = enabled
         self.update()
 
+    def set_active_region(self, region: ActiveRegion) -> None:
+        self._active_region = region
+        self.update()
+
+    def set_os_control_active(self, active: bool) -> None:
+        self._os_control_active = active
+        self.update()
+
     def clear(self, message: str | None = None) -> None:
         """Clear the preview image and show a status message."""
         self._image = None
         self._detection = None
+        self._index_extended = False
         if message is not None:
             self._placeholder_text = message
         self.update()
@@ -75,8 +101,16 @@ class CameraView(QWidget):
         target_rect = self._fit_rect(self._image.width(), self._image.height())
         painter.drawImage(target_rect, self._image)
 
+        if self._active_region is not None:
+            self._draw_active_region(painter, target_rect, self._active_region)
+
         if self._show_landmarks and self._detection is not None:
-            self._draw_landmarks(painter, target_rect, self._detection)
+            self._draw_landmarks(
+                painter,
+                target_rect,
+                self._detection,
+                index_extended=self._index_extended,
+            )
 
     def _fit_rect(self, img_w: int, img_h: int) -> QRectF:
         widget_w = max(1, self.width())
@@ -88,11 +122,37 @@ class CameraView(QWidget):
         top = (widget_h - draw_h) / 2.0
         return QRectF(left, top, draw_w, draw_h)
 
+    def _draw_active_region(
+        self,
+        painter: QPainter,
+        target_rect: QRectF,
+        region: ActiveRegion,
+    ) -> None:
+        box = QRectF(
+            target_rect.left() + region.left * target_rect.width(),
+            target_rect.top() + region.top * target_rect.height(),
+            region.width * target_rect.width(),
+            region.height * target_rect.height(),
+        )
+        color = QColor("#f59e0b") if self._os_control_active else QColor("#38bdf8")
+        pen = QPen(color, 1.8, Qt.PenStyle.DashLine)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(box)
+
+        painter.setPen(color)
+        painter.drawText(
+            QPointF(box.left() + 6.0, max(target_rect.top() + 14.0, box.top() + 16.0)),
+            "Active Cursor Region",
+        )
+
     @staticmethod
     def _draw_landmarks(
         painter: QPainter,
         target_rect: QRectF,
         detection: HandDetection,
+        *,
+        index_extended: bool = False,
     ) -> None:
         points = [
             QPointF(
@@ -109,7 +169,10 @@ class CameraView(QWidget):
                 painter.drawLine(points[start_idx], points[end_idx])
 
         for idx, pt in enumerate(points):
-            if idx in FINGERTIP_INDICES:
+            if idx == INDEX_TIP and index_extended:
+                color = QColor("#facc15")
+                radius = 7.0
+            elif idx in FINGERTIP_INDICES:
                 color = QColor("#22c55e")
                 radius = 5.0
             elif idx == WRIST_INDEX:
@@ -122,4 +185,3 @@ class CameraView(QWidget):
             painter.setPen(QPen(QColor("#0f172a"), 1.2))
             painter.setBrush(color)
             painter.drawEllipse(pt, radius, radius)
-

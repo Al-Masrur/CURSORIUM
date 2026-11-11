@@ -1,4 +1,4 @@
-"""Typed data structures shared between camera, vision, input, controller, and UI."""
+"""Typed data structures shared between camera, vision, gestures, input, controller, and UI."""
 
 from __future__ import annotations
 
@@ -18,11 +18,12 @@ class CameraStatus(str, Enum):
 
 
 class ControlMode(str, Enum):
-    """Cursor control mode reported by the pipeline."""
+    """Cursor and gesture control mode reported by the pipeline."""
 
     DISABLED = "Preview Only"
     STANDBY = "Standby (No Extended Index)"
     CURSOR = "Cursor Tracking"
+    DRAGGING = "Dragging"
     EMERGENCY_STOPPED = "Emergency Stopped (Esc)"
 
 
@@ -55,13 +56,17 @@ class HandDetection:
 
 @dataclass(frozen=True, slots=True)
 class CursorState:
-    """Computed cursor tracking and mapping state for the current frame."""
+    """Computed cursor, gesture, and action state for the current frame."""
 
     mode: ControlMode
     index_extended: bool
     fingertip: NormalizedPoint | None
     mapped_position: tuple[int, int] | None
     os_input_active: bool
+    gesture_state: str = "Idle"
+    last_action: str = "None"
+    dragging: bool = False
+    active_pinch: str = "None"
 
 
 @dataclass(frozen=True, slots=True)

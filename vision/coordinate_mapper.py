@@ -6,7 +6,7 @@ import threading
 from dataclasses import dataclass
 
 from app.events import NormalizedPoint
-from utils.smoothing import ExponentialSmoother, smoothing_to_alpha
+from utils.smoothing import AdaptiveCursorSmoother, ExponentialSmoother, smoothing_to_alpha
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +80,8 @@ class CoordinateMapper:
         sensitivity: float = 1.0,
         smoothing: float = 0.35,
         mirror_x: bool = False,
+        adaptive_smoothing: bool = True,
+        deadband_px: float = 1.5,
     ) -> None:
         if screen_width <= 0 or screen_height <= 0:
             raise ValueError("screen_width and screen_height must be positive")
@@ -93,7 +95,12 @@ class CoordinateMapper:
         self._sensitivity = float(sensitivity)
         self._smoothing = float(smoothing)
         self._mirror_x = bool(mirror_x)
-        self._smoother = ExponentialSmoother(alpha=smoothing_to_alpha(self._smoothing))
+        alpha = smoothing_to_alpha(self._smoothing)
+        self._smoother: ExponentialSmoother = (
+            AdaptiveCursorSmoother(alpha=alpha, deadband_px=deadband_px)
+            if adaptive_smoothing
+            else ExponentialSmoother(alpha=alpha)
+        )
 
     @property
     def active_region(self) -> ActiveRegion:

@@ -16,7 +16,17 @@ from app.config import AppConfig
 from app.events import CameraStatus, HandDetection, NormalizedPoint
 from input_control.mock_backend import MockInputBackend
 from ui.main_window import MainWindow
-from vision.landmark_features import INDEX_DIP, INDEX_MCP, INDEX_PIP, INDEX_TIP
+from vision.landmark_features import (
+    INDEX_DIP,
+    INDEX_MCP,
+    INDEX_PIP,
+    INDEX_TIP,
+    MIDDLE_MCP,
+    MIDDLE_TIP,
+    PINKY_MCP,
+    THUMB_TIP,
+    WRIST,
+)
 
 
 class _MockCapture:
@@ -58,12 +68,12 @@ class _MockLandmarker:
 
 
 class _ControllableLandmarker:
-    """Emits configurable hand poses across frames for Phase 2 integration tests."""
+    """Emits configurable hand poses across frames for Phase 2 & 3 integration tests."""
 
     def __init__(self) -> None:
         self.closed = False
         self.calls = 0
-        self.mode = "extended"  # "extended" | "folded" | "lost"
+        self.mode = "extended"  # "extended" | "folded" | "lost" | "left_pinch" | "right_pinch"
         self.tip_x = 0.5
         self.tip_y = 0.4
 
@@ -74,12 +84,31 @@ class _ControllableLandmarker:
         self.calls += 1
         if self.mode == "lost":
             return None
-        pts = [NormalizedPoint(x=0.5, y=0.8) for _ in range(21)]
+        pts = [NormalizedPoint(x=0.5, y=0.75) for _ in range(21)]
+        pts[WRIST] = NormalizedPoint(x=0.5, y=0.85)
+        pts[MIDDLE_MCP] = NormalizedPoint(x=0.5, y=0.65)
+        pts[PINKY_MCP] = NormalizedPoint(x=0.58, y=0.68)
+        pts[THUMB_TIP] = NormalizedPoint(x=0.32, y=0.70)
+        pts[MIDDLE_TIP] = NormalizedPoint(x=0.56, y=0.20)
+
         if self.mode == "extended":
             pts[INDEX_MCP] = NormalizedPoint(x=self.tip_x, y=self.tip_y + 0.3)
             pts[INDEX_PIP] = NormalizedPoint(x=self.tip_x, y=self.tip_y + 0.2)
             pts[INDEX_DIP] = NormalizedPoint(x=self.tip_x, y=self.tip_y + 0.1)
             pts[INDEX_TIP] = NormalizedPoint(x=self.tip_x, y=self.tip_y)
+        elif self.mode == "left_pinch":
+            pts[THUMB_TIP] = NormalizedPoint(x=self.tip_x, y=self.tip_y)
+            pts[INDEX_MCP] = NormalizedPoint(x=0.45, y=0.65)
+            pts[INDEX_PIP] = NormalizedPoint(x=0.46, y=0.55)
+            pts[INDEX_DIP] = NormalizedPoint(x=self.tip_x, y=self.tip_y + 0.04)
+            pts[INDEX_TIP] = NormalizedPoint(x=self.tip_x + 0.01, y=self.tip_y)
+        elif self.mode == "right_pinch":
+            pts[INDEX_MCP] = NormalizedPoint(x=0.45, y=0.65)
+            pts[INDEX_PIP] = NormalizedPoint(x=0.45, y=0.55)
+            pts[INDEX_DIP] = NormalizedPoint(x=0.45, y=0.45)
+            pts[INDEX_TIP] = NormalizedPoint(x=0.45, y=0.35)
+            pts[THUMB_TIP] = NormalizedPoint(x=0.50, y=0.55)
+            pts[MIDDLE_TIP] = NormalizedPoint(x=0.51, y=0.55)
         else:
             pts[INDEX_MCP] = NormalizedPoint(x=0.5, y=0.6)
             pts[INDEX_PIP] = NormalizedPoint(x=0.5, y=0.5)
@@ -301,4 +330,121 @@ def test_phase2_cursor_control_calibration_tracking_loss_and_esc_stop(
     window.close()
     qt_app.processEvents()
     assert controller.is_running is False
+    assert mock_backend.closed is True
+
+
+def test_phase3_gestures_clicks_drag_safety_and_ui(
+    qt_app: QApplication,
+    tmp_path,
+) -> None:
+    model_file = tmp_path / "hand_landmarker.task"
+    model_file.write_bytes(b"stub")
+
+    cap = _MockCapture(opened=True)
+    landmarker = _ControllableLandmarker()
+    mock_backend = MockInputBackend(screen_width=1001, screen_height=1001)
+
+    cfg = AppConfig(
+        model_path=model_file,
+        cursor_smoothing=0.0,
+        pinch_stable_ms=10,
+        drag_hold_ms=120,
+        double_click_interval_ms=120,
+        click_cooldown_ms=40,
+    )
+    controller = AppController(
+        config=cfg,
+        capture_factory=lambda _idx: cap,
+        landmarker_factory=lambda: landmarker,  # type: ignore[return-value]
+        input_backend=mock_backend,
+        escape_key_checker=lambda: False,
+    )
+    window = MainWindow(controller=controller)
+
+    def wait_frames(n: int) -> None:
+        target = landmarker.calls + n
+        deadline = time.monotonic() + 2.0
+        while landmarker.calls < target and time.monotonic() < deadline:
+            qt_app.processEvents()
+            time.sleep(0.01)
+        qt_app.processEvents()
+
+    # Gesture sliders update rules cleanly
+    window.pinch_activate_slider.setValue(30)
+    window.pinch_release_slider.setValue(48)
+    window.drag_hold_slider.setValue(180)
+    window.double_click_slider.setValue(160)
+    qt_app.processEvents()
+    assert controller.config.pinch_activate_ratio == pytest.approx(0.30)
+    assert controller.config.pinch_release_ratio == pytest.approx(0.48)
+    assert controller.config.drag_hold_ms == 180
+    assert controller.config.double_click_interval_ms == 160
+
+    window.start_stop_button.click()
+    wait_frames(3)
+
+    # While OS input is disabled, pinches never execute OS clicks
+    landmarker.mode = "left_pinch"
+    wait_frames(4)
+    landmarker.mode = "extended"
+    wait_frames(20)
+    assert mock_backend.click_history == []
+    assert mock_backend.held_buttons == set()
+
+    # Explicitly enable OS control
+    window.os_control_button.click()
+    qt_app.processEvents()
+    assert controller.os_input_enabled is True
+
+    # 1. Single left click (quick pinch then wait > 160ms)
+    landmarker.mode = "left_pinch"
+    wait_frames(3)
+    landmarker.mode = "extended"
+    time.sleep(0.20)
+    wait_frames(3)
+    assert any(btn == "left" and count == 1 for btn, count, _ in mock_backend.click_history)
+
+    # 2. Double-click (two quick pinches within 160ms window)
+    landmarker.mode = "left_pinch"
+    wait_frames(3)
+    landmarker.mode = "extended"
+    wait_frames(2)
+    landmarker.mode = "left_pinch"
+    wait_frames(3)
+    landmarker.mode = "extended"
+    wait_frames(6)
+    assert any(btn == "left" and count == 2 for btn, count, _ in mock_backend.click_history)
+
+    # 3. Right click (thumb-middle pinch)
+    landmarker.mode = "right_pinch"
+    wait_frames(3)
+    landmarker.mode = "extended"
+    wait_frames(8)
+    assert any(btn == "right" and count == 1 for btn, count, _ in mock_backend.click_history)
+
+    # 4. Hold pinch -> drag start, move, then Esc emergency stop releases held button
+    landmarker.mode = "left_pinch"
+    time.sleep(0.22)
+    wait_frames(4)
+    assert mock_backend.held_buttons == {"left"}
+    assert "Dragging" in window.tracking_mode_label.text() or "Dragging" in window.gesture_status_label.text()
+
+    window.escape_shortcut.activated.emit()
+    qt_app.processEvents()
+    assert controller.os_input_enabled is False
+    assert mock_backend.held_buttons == set()
+    assert ("up", "left") in mock_backend.button_events
+
+    # 5. Re-enable OS control, start drag again, and verify window close releases held button
+    window.os_control_button.click()
+    qt_app.processEvents()
+    landmarker.mode = "left_pinch"
+    time.sleep(0.22)
+    wait_frames(4)
+    assert mock_backend.held_buttons == {"left"}
+
+    window.close()
+    qt_app.processEvents()
+    assert controller.is_running is False
+    assert mock_backend.held_buttons == set()
     assert mock_backend.closed is True

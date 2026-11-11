@@ -2,31 +2,48 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
 
 from app.events import HandDetection, NormalizedPoint
 
+WRIST = 0
+THUMB_TIP = 4
 INDEX_MCP = 5
 INDEX_PIP = 6
 INDEX_DIP = 7
 INDEX_TIP = 8
+MIDDLE_MCP = 9
+MIDDLE_TIP = 12
+PINKY_MCP = 17
 EXPECTED_LANDMARK_COUNT = 21
 
 _MIN_SEGMENT_LENGTH = 1e-4
+_MIN_PALM_SCALE = 1e-4
 _MIN_JOINT_COSINE = 0.5
 _MIN_STRAIGHTNESS_RATIO = 0.80
 
 
 @dataclass(frozen=True, slots=True)
 class HandFeatures:
-    """Extracted Phase 2 features from a single-hand detection."""
+    """Extracted hand geometry features from a single-hand detection."""
 
     hand_detected: bool
     index_tip: NormalizedPoint | None
     index_extended: bool
     confidence: float
+    thumb_tip: NormalizedPoint | None = None
+    middle_tip: NormalizedPoint | None = None
+    palm_scale: float | None = None
+    thumb_index_ratio: float | None = None
+    thumb_middle_ratio: float | None = None
+
+
+def euclidean_distance_2d(a: NormalizedPoint, b: NormalizedPoint) -> float:
+    """Compute 2D Euclidean distance between two normalized landmarks."""
+    return math.hypot(a.x - b.x, a.y - b.y)
 
 
 def extract_index_fingertip(detection: HandDetection | None) -> NormalizedPoint | None:
@@ -34,6 +51,19 @@ def extract_index_fingertip(detection: HandDetection | None) -> NormalizedPoint 
     if detection is None or len(detection.landmarks) <= INDEX_TIP:
         return None
     return detection.landmarks[INDEX_TIP]
+
+
+def compute_palm_scale(detection: HandDetection | None) -> float | None:
+    """Compute a stable palm-size reference from wrist->middle_mcp and palm width."""
+    if detection is None or len(detection.landmarks) < EXPECTED_LANDMARK_COUNT:
+        return None
+    landmarks = detection.landmarks
+    wrist_to_middle = euclidean_distance_2d(landmarks[WRIST], landmarks[MIDDLE_MCP])
+    palm_width = euclidean_distance_2d(landmarks[INDEX_MCP], landmarks[PINKY_MCP])
+    scale = max(wrist_to_middle, palm_width)
+    if scale < _MIN_PALM_SCALE:
+        return None
+    return scale
 
 
 def is_index_finger_extended(detection: HandDetection | None) -> bool:
@@ -91,7 +121,7 @@ def is_index_finger_extended(detection: HandDetection | None) -> bool:
 
 
 def extract_hand_features(detection: HandDetection | None) -> HandFeatures:
-    """Extract index fingertip position and extension state from a HandDetection."""
+    """Extract fingertip positions, palm-normalized pinch ratios, and index extension."""
     if detection is None or len(detection.landmarks) < EXPECTED_LANDMARK_COUNT:
         return HandFeatures(
             hand_detected=False,
@@ -100,12 +130,28 @@ def extract_hand_features(detection: HandDetection | None) -> HandFeatures:
             confidence=0.0,
         )
 
-    tip = extract_index_fingertip(detection)
+    landmarks = detection.landmarks
+    thumb_tip = landmarks[THUMB_TIP]
+    index_tip = landmarks[INDEX_TIP]
+    middle_tip = landmarks[MIDDLE_TIP]
     extended = is_index_finger_extended(detection)
+
+    palm_scale = compute_palm_scale(detection)
+    if palm_scale is not None:
+        thumb_index_ratio = euclidean_distance_2d(thumb_tip, index_tip) / palm_scale
+        thumb_middle_ratio = euclidean_distance_2d(thumb_tip, middle_tip) / palm_scale
+    else:
+        thumb_index_ratio = None
+        thumb_middle_ratio = None
+
     return HandFeatures(
         hand_detected=True,
-        index_tip=tip,
+        index_tip=index_tip,
         index_extended=extended,
         confidence=detection.confidence,
+        thumb_tip=thumb_tip,
+        middle_tip=middle_tip,
+        palm_scale=palm_scale,
+        thumb_index_ratio=thumb_index_ratio,
+        thumb_middle_ratio=thumb_middle_ratio,
     )
-

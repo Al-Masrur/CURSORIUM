@@ -76,7 +76,10 @@ class HandLandmarkerService:
             timestamp_ms = self._last_timestamp_ms + 1
         self._last_timestamp_ms = timestamp_ms
 
-        contiguous_rgb = np.ascontiguousarray(frame_rgb, dtype=np.uint8)
+        if frame_rgb.dtype == np.uint8 and frame_rgb.flags["C_CONTIGUOUS"]:
+            contiguous_rgb = frame_rgb
+        else:
+            contiguous_rgb = np.ascontiguousarray(frame_rgb, dtype=np.uint8)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=contiguous_rgb)
         result = self._detector.detect_for_video(mp_image, timestamp_ms)
         return self._extract_primary_hand(result)

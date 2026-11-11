@@ -130,6 +130,13 @@ class CameraManager:
             self._on_error(message)
 
     def _configure_capture(self, cap: VideoCaptureLike) -> None:
+        # Request MJPG compressed USB transfer on Windows webcams first so
+        # higher frame rates (e.g. 30 FPS) do not fall back to slow YUY2.
+        try:
+            fourcc = cv2.VideoWriter_fourcc(*"MJPG")
+            cap.set(cv2.CAP_PROP_FOURCC, float(fourcc))
+        except Exception:
+            pass
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(self._config.frame_width))
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(self._config.frame_height))
         cap.set(cv2.CAP_PROP_FPS, float(self._config.target_fps))

@@ -41,8 +41,17 @@ class VisionWorker:
 
         self._lock = threading.Lock()
         self._mirror_preview = config.mirror_preview
+        self._gamma_lut: np.ndarray | None = (
+            self._build_gamma_lut(0.65) if getattr(config, "low_light_boost", True) else None
+        )
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+
+    @staticmethod
+    def _build_gamma_lut(gamma: float) -> np.ndarray:
+        """Build a 256-entry uint8 gamma lookup table for fast dim-frame boosting."""
+        normalized = np.arange(256, dtype=np.float32) / 255.0
+        return np.clip(np.power(normalized, gamma) * 255.0, 0.0, 255.0).astype(np.uint8)
 
     @property
     def mirror_preview(self) -> bool:
@@ -110,7 +119,18 @@ class VisionWorker:
                     frame_bgr = cv2.flip(frame_bgr, 1)
 
                 frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-                detection = landmarker.detect(frame_rgb, packet.timestamp_ms)
+                detection_rgb = frame_rgb
+                if self._gamma_lut is not None and float(frame_rgb[::8, ::8].mean()) < 65.0:
+                    detection_rgb = cv2.LUT(frame_rgb, self._gamma_lut)
+                detect_start_ms = time.monotonic_ns() // 1_000_000
+                detection = landmarker.detect(detection_rgb, packet.timestamp_ms)
+                detect_elapsed_ms = (time.monotonic_ns() // 1_000_000) - detect_start_ms
+                if (
+                    detection is not None
+                    and self._config.stale_frame_timeout_ms > 0
+                    and detect_elapsed_ms > self._config.stale_frame_timeout_ms
+                ):
+                    detection = None
 
                 fps_frame_count += 1
                 now = time.monotonic()

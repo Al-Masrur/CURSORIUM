@@ -1,4 +1,4 @@
-"""Live webcam preview widget with crisp 21-landmark and active-region Qt overlay."""
+"""Live webcam preview widget with crisp 21-landmark, active-region, and pinch overlay."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QSizePolicy, QWidget
 from app.events import HandDetection
 from vision.coordinate_mapper import ActiveRegion
 from vision.hand_landmarker import HAND_CONNECTIONS
-from vision.landmark_features import INDEX_TIP
+from vision.landmark_features import INDEX_TIP, MIDDLE_TIP, THUMB_TIP
 
 FINGERTIP_INDICES = frozenset({4, 8, 12, 16, 20})
 WRIST_INDEX = 0
@@ -27,11 +27,13 @@ class CameraView(QWidget):
         self._active_region: ActiveRegion | None = ActiveRegion()
         self._index_extended: bool = False
         self._os_control_active: bool = False
+        self._active_pinch: str = "None"
+        self._dragging: bool = False
         self._placeholder_text: str = (
             "Camera is stopped.\nClick 'Start Camera' to preview webcam & 21 hand landmarks."
         )
 
-        self.setMinimumSize(640, 440)
+        self.setMinimumSize(640, 420)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
     def update_frame(
@@ -42,6 +44,8 @@ class CameraView(QWidget):
         active_region: ActiveRegion | None = None,
         index_extended: bool = False,
         os_control_active: bool = False,
+        active_pinch: str = "None",
+        dragging: bool = False,
     ) -> None:
         """Update the displayed RGB frame and tracking overlay on the UI thread."""
         height, width, channels = frame_rgb.shape
@@ -61,6 +65,8 @@ class CameraView(QWidget):
             self._active_region = active_region
         self._index_extended = index_extended
         self._os_control_active = os_control_active
+        self._active_pinch = active_pinch
+        self._dragging = dragging
         self.update()
 
     def set_show_landmarks(self, enabled: bool) -> None:
@@ -80,6 +86,8 @@ class CameraView(QWidget):
         self._image = None
         self._detection = None
         self._index_extended = False
+        self._active_pinch = "None"
+        self._dragging = False
         if message is not None:
             self._placeholder_text = message
         self.update()
@@ -110,6 +118,8 @@ class CameraView(QWidget):
                 target_rect,
                 self._detection,
                 index_extended=self._index_extended,
+                active_pinch=self._active_pinch,
+                dragging=self._dragging,
             )
 
     def _fit_rect(self, img_w: int, img_h: int) -> QRectF:
@@ -153,6 +163,8 @@ class CameraView(QWidget):
         detection: HandDetection,
         *,
         index_extended: bool = False,
+        active_pinch: str = "None",
+        dragging: bool = False,
     ) -> None:
         points = [
             QPointF(
@@ -168,9 +180,18 @@ class CameraView(QWidget):
             if start_idx < len(points) and end_idx < len(points):
                 painter.drawLine(points[start_idx], points[end_idx])
 
+        # Highlight active pinch pair visually
+        if active_pinch == "Thumb-Index" and len(points) > INDEX_TIP:
+            pinch_color = QColor("#ef4444") if dragging else QColor("#f97316")
+            painter.setPen(QPen(pinch_color, 3.5))
+            painter.drawLine(points[THUMB_TIP], points[INDEX_TIP])
+        elif active_pinch == "Thumb-Middle" and len(points) > MIDDLE_TIP:
+            painter.setPen(QPen(QColor("#a855f7"), 3.5))
+            painter.drawLine(points[THUMB_TIP], points[MIDDLE_TIP])
+
         for idx, pt in enumerate(points):
-            if idx == INDEX_TIP and index_extended:
-                color = QColor("#facc15")
+            if idx == INDEX_TIP and (index_extended or dragging):
+                color = QColor("#ef4444") if dragging else QColor("#facc15")
                 radius = 7.0
             elif idx in FINGERTIP_INDICES:
                 color = QColor("#22c55e")

@@ -1,4 +1,4 @@
-"""Application controller coordinating camera, vision, mapping, and OS input safety."""
+"""Application controller coordinating camera, vision, gestures, mapping, and OS input safety."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import ctypes
 import logging
 import sys
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import replace
 
@@ -22,6 +23,9 @@ from app.events import (
 )
 from camera.camera_manager import CameraManager, CaptureFactory
 from camera.frame_buffer import LatestFrameBuffer
+from gestures.gesture_rules import GestureRules
+from gestures.state_manager import GestureStateManager
+from input_control.action_mapper import ActionMapper
 from input_control.backend import InputBackend
 from input_control.desktop_backend import DesktopInputBackend
 from input_control.dispatcher import InputDispatcher
@@ -33,6 +37,7 @@ from vision.vision_worker import VisionWorker
 logger = logging.getLogger(__name__)
 
 _VK_ESCAPE = 0x1B
+_ACTION_DISPLAY_TTL_MS = 1200
 
 
 def is_windows_escape_pressed() -> bool:
@@ -47,7 +52,7 @@ def is_windows_escape_pressed() -> bool:
 
 
 class AppController(QObject):
-    """Owns the capture, tracking, coordinate mapping, and safe OS input lifecycle."""
+    """Owns capture, tracking, gesture FSM, coordinate mapping, and safe OS input."""
 
     preview_available = Signal()
     status_changed = Signal(object)
@@ -73,11 +78,14 @@ class AppController(QObject):
         self._lifecycle_lock = threading.Lock()
         self._preview_lock = threading.Lock()
         self._state_lock = threading.Lock()
+        self._gesture_lock = threading.Lock()
         self._pending_preview: tuple[np.ndarray, TrackingResult] | None = None
         self._preview_notified = False
         self._running = False
         self._emergency_stopped = False
         self._latest_fingertip: NormalizedPoint | None = None
+        self._last_action_label: str = "None"
+        self._last_action_until_ms: int = 0
         self._latest_cursor_state = CursorState(
             mode=ControlMode.DISABLED,
             index_extended=False,
@@ -92,6 +100,11 @@ class AppController(QObject):
             os_input_enabled=self._config.os_input_enabled,
             on_backend_error=self._handle_input_error,
         )
+        self._action_mapper = ActionMapper(self._dispatcher)
+
+        gesture_rules = self._build_gesture_rules()
+        self._gesture_state_manager = GestureStateManager(rules=gesture_rules)
+
         screen_w, screen_h = self._safe_screen_size()
         initial_region = ActiveRegion(
             left=self._config.active_region_left,
@@ -106,6 +119,8 @@ class AppController(QObject):
             sensitivity=self._config.cursor_sensitivity,
             smoothing=self._config.cursor_smoothing,
             mirror_x=False,
+            adaptive_smoothing=self._config.adaptive_smoothing,
+            deadband_px=self._config.cursor_deadband_px,
         )
 
         self._camera = CameraManager(
@@ -170,6 +185,10 @@ class AppController(QObject):
         return self._mapper
 
     @property
+    def gesture_state_manager(self) -> GestureStateManager:
+        return self._gesture_state_manager
+
+    @property
     def latest_cursor_state(self) -> CursorState:
         with self._state_lock:
             return self._latest_cursor_state
@@ -191,6 +210,8 @@ class AppController(QObject):
             self._running = True
             self._clear_pending_preview()
             self._mapper.reset_smoothing()
+            with self._gesture_lock:
+                self._gesture_state_manager.reset(reason="start")
             self._camera.start()
             self._vision.start()
             logger.info("AppController started capture and tracking pipeline")
@@ -204,8 +225,13 @@ class AppController(QObject):
             self._running = False
         self._stop_workers()
         self._clear_pending_preview()
+        with self._gesture_lock:
+            self._gesture_state_manager.reset(reason="stop")
+        self._dispatcher.release_all()
         with self._state_lock:
             self._latest_fingertip = None
+            self._last_action_label = "None"
+            self._last_action_until_ms = 0
             self._latest_cursor_state = CursorState(
                 mode=ControlMode.DISABLED,
                 index_extended=False,
@@ -242,11 +268,17 @@ class AppController(QObject):
         self._config.show_landmarks = enabled
 
     def set_os_input_enabled(self, enabled: bool) -> None:
-        """Explicitly enable or disable real OS cursor movement."""
+        """Explicitly enable or disable real OS cursor and click execution."""
         enabled = bool(enabled)
         screen_w, screen_h = self._safe_screen_size()
         self._mapper.set_screen_size(screen_w, screen_h)
         self._mapper.reset_smoothing()
+
+        with self._gesture_lock:
+            self._gesture_state_manager.reset(
+                timestamp_ms=time.monotonic_ns() // 1_000_000,
+                reason="os_toggle",
+            )
 
         changed = False
         with self._state_lock:
@@ -263,19 +295,29 @@ class AppController(QObject):
             self.os_control_changed.emit(enabled)
 
     def emergency_stop(self) -> None:
-        """Immediately halt OS cursor control and release held input state."""
+        """Immediately halt OS control, reset gesture FSM, and release held buttons."""
         was_enabled = self._dispatcher.is_enabled or self._config.os_input_enabled
+        with self._gesture_lock:
+            self._gesture_state_manager.reset(
+                timestamp_ms=time.monotonic_ns() // 1_000_000,
+                reason="emergency_stop",
+            )
         self._dispatcher.emergency_stop()
         self._mapper.reset_smoothing()
         with self._state_lock:
             self._config.os_input_enabled = False
             self._emergency_stopped = True
+            self._last_action_label = "Emergency Stop (Buttons Released)"
+            self._last_action_until_ms = 0
             self._latest_cursor_state = CursorState(
                 mode=ControlMode.EMERGENCY_STOPPED,
                 index_extended=False,
                 fingertip=self._latest_fingertip,
                 mapped_position=None,
                 os_input_active=False,
+                gesture_state="Emergency Stopped",
+                last_action="Emergency Stop (Buttons Released)",
+                dragging=False,
             )
         if was_enabled:
             self.os_control_changed.emit(False)
@@ -291,6 +333,51 @@ class AppController(QObject):
         """Update exponential moving average smoothing factor."""
         self._mapper.set_smoothing(smoothing)
         self._config.cursor_smoothing = smoothing
+
+    def _build_gesture_rules(self) -> GestureRules:
+        return GestureRules(
+            pinch_activate_ratio=self._config.pinch_activate_ratio,
+            pinch_release_ratio=self._config.pinch_release_ratio,
+            pinch_stable_ms=self._config.pinch_stable_ms,
+            drag_hold_ms=self._config.drag_hold_ms,
+            double_click_interval_ms=self._config.double_click_interval_ms,
+            click_cooldown_ms=self._config.click_cooldown_ms,
+            pinch_smoothing_alpha=self._config.pinch_smoothing_alpha,
+            min_pinch_confidence=self._config.min_pinch_confidence,
+            tracking_loss_grace_ms=self._config.tracking_loss_grace_ms,
+        )
+
+    def set_pinch_thresholds(self, activate_ratio: float, release_ratio: float) -> None:
+        """Update palm-normalized pinch activation and release thresholds."""
+        new_rules = replace(
+            self._build_gesture_rules(),
+            pinch_activate_ratio=activate_ratio,
+            pinch_release_ratio=release_ratio,
+        )
+        self._config.pinch_activate_ratio = activate_ratio
+        self._config.pinch_release_ratio = release_ratio
+        with self._gesture_lock:
+            self._gesture_state_manager.update_rules(new_rules)
+
+    def set_drag_hold_ms(self, drag_hold_ms: int) -> None:
+        """Update pinch hold duration before drag activates."""
+        new_rules = replace(
+            self._build_gesture_rules(),
+            drag_hold_ms=drag_hold_ms,
+        )
+        self._config.drag_hold_ms = drag_hold_ms
+        with self._gesture_lock:
+            self._gesture_state_manager.update_rules(new_rules)
+
+    def set_double_click_interval_ms(self, interval_ms: int) -> None:
+        """Update double-click timing window in milliseconds."""
+        new_rules = replace(
+            self._build_gesture_rules(),
+            double_click_interval_ms=interval_ms,
+        )
+        self._config.double_click_interval_ms = interval_ms
+        with self._gesture_lock:
+            self._gesture_state_manager.update_rules(new_rules)
 
     def set_region_margins(self, margin_x: float, margin_y: float) -> None:
         """Set symmetric active movement region margins."""
@@ -360,41 +447,58 @@ class AppController(QObject):
             self.emergency_stop()
 
         features = extract_hand_features(result.detection)
+
+        with self._gesture_lock:
+            state_update = self._gesture_state_manager.update(features, result.timestamp_ms)
+
         os_active = self._dispatcher.is_enabled and self.is_running
+
+        if state_update.cursor_should_move and features.index_tip is not None:
+            mapped_pos: tuple[int, int] | None = self._mapper.map_point(features.index_tip)
+        else:
+            mapped_pos = None
+            if not features.hand_detected and not state_update.dragging:
+                self._mapper.reset_smoothing()
+
+        dispatch_result = self._action_mapper.dispatch(state_update.events, mapped_pos)
+        if not features.hand_detected and not state_update.dragging:
+            self._dispatcher.release_all()
 
         with self._state_lock:
             self._latest_fingertip = features.index_tip
             emergency = self._emergency_stopped
 
-        if features.hand_detected and features.index_extended and features.index_tip is not None:
-            mapped_pos = self._mapper.map_point(features.index_tip)
-            if os_active:
-                self._dispatcher.move_cursor(mapped_pos[0], mapped_pos[1])
-                mode = ControlMode.CURSOR
-            else:
-                mode = ControlMode.EMERGENCY_STOPPED if emergency else ControlMode.DISABLED
-            cursor_state = CursorState(
-                mode=mode,
-                index_extended=True,
-                fingertip=features.index_tip,
-                mapped_position=mapped_pos,
-                os_input_active=os_active,
-            )
+            if dispatch_result.action_label is not None:
+                self._last_action_label = dispatch_result.action_label
+                self._last_action_until_ms = result.timestamp_ms + _ACTION_DISPLAY_TTL_MS
+            elif self._last_action_until_ms and result.timestamp_ms > self._last_action_until_ms:
+                self._last_action_label = "None"
+                self._last_action_until_ms = 0
+
+            action_label = self._last_action_label
+
+        if emergency and not os_active:
+            mode = ControlMode.EMERGENCY_STOPPED
+        elif not os_active:
+            mode = ControlMode.DISABLED
+        elif state_update.dragging:
+            mode = ControlMode.DRAGGING
+        elif state_update.cursor_should_move:
+            mode = ControlMode.CURSOR
         else:
-            # Invalid or lost tracking stops movement immediately and resets EMA history.
-            self._mapper.reset_smoothing()
-            self._dispatcher.release_all()
-            if os_active:
-                mode = ControlMode.STANDBY
-            else:
-                mode = ControlMode.EMERGENCY_STOPPED if emergency else ControlMode.DISABLED
-            cursor_state = CursorState(
-                mode=mode,
-                index_extended=False,
-                fingertip=features.index_tip,
-                mapped_position=None,
-                os_input_active=os_active,
-            )
+            mode = ControlMode.STANDBY
+
+        cursor_state = CursorState(
+            mode=mode,
+            index_extended=features.index_extended,
+            fingertip=features.index_tip,
+            mapped_position=mapped_pos,
+            os_input_active=os_active,
+            gesture_state=state_update.state.value,
+            last_action=action_label,
+            dragging=state_update.dragging,
+            active_pinch=state_update.active_pinch.value,
+        )
 
         with self._state_lock:
             self._latest_cursor_state = cursor_state
@@ -416,6 +520,11 @@ class AppController(QObject):
             self.preview_available.emit()
 
     def _handle_input_error(self, message: str) -> None:
+        with self._gesture_lock:
+            self._gesture_state_manager.reset(
+                timestamp_ms=time.monotonic_ns() // 1_000_000,
+                reason="input_error",
+            )
         with self._state_lock:
             self._config.os_input_enabled = False
         self.os_control_changed.emit(False)

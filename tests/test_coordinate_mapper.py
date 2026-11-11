@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from app.events import NormalizedPoint
-from utils.smoothing import ExponentialSmoother, smoothing_to_alpha
+from utils.smoothing import AdaptiveCursorSmoother, ExponentialSmoother, smoothing_to_alpha
 from vision.coordinate_mapper import ActiveRegion, CoordinateMapper
 
 
@@ -93,3 +93,28 @@ def test_mapper_resets_smoothing_on_calibration_change() -> None:
     # Calibration change must reset smoothing so next point isn't pulled toward (0, 0)
     mapper.set_active_region(ActiveRegion(0.0, 0.0, 1.0, 1.0))
     assert mapper.map_point(NormalizedPoint(0.8, 0.8)) == (800, 800)
+
+
+def test_adaptive_cursor_smoother_deadband_velocity_and_raw_passthrough() -> None:
+    smoother = AdaptiveCursorSmoother(alpha=0.5, deadband_px=2.0)
+    assert smoother.update(500.0, 500.0) == (500.0, 500.0)
+
+    # Sub-deadband jitter must hold the previous filtered coordinates steady
+    assert smoother.update(501.0, 499.2) == (500.0, 500.0)
+
+    # Fast large motion scales effective alpha up so cursor catches up promptly
+    fast_x, fast_y = smoother.update(700.0, 500.0)
+    assert fast_x > 600.0
+    assert fast_y == 500.0
+
+    # smoothing=0.0 (alpha=1.0) bypasses deadband and filtering completely
+    raw_mapper = CoordinateMapper(
+        screen_width=1001,
+        screen_height=1001,
+        active_region=ActiveRegion(0.0, 0.0, 1.0, 1.0),
+        smoothing=0.0,
+        adaptive_smoothing=True,
+        deadband_px=5.0,
+    )
+    assert raw_mapper.map_point(NormalizedPoint(0.5, 0.5)) == (500, 500)
+    assert raw_mapper.map_point(NormalizedPoint(0.501, 0.5)) == (501, 500)

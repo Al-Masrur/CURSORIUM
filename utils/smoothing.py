@@ -1,6 +1,8 @@
-"""Exponential moving average (EMA) smoothing helpers for cursor motion."""
+"""Exponential and velocity-adaptive smoothing helpers for cursor motion."""
 
 from __future__ import annotations
+
+import math
 
 
 def smoothing_to_alpha(smoothing: float) -> float:
@@ -55,3 +57,48 @@ class ExponentialSmoother:
         self._previous = (smoothed_x, smoothed_y)
         return self._previous
 
+
+class AdaptiveCursorSmoother(ExponentialSmoother):
+    """Velocity-adaptive EMA with micro-jitter deadband for noisy laptop webcams.
+
+    - Movements smaller than ``deadband_px`` are suppressed when smoothing is enabled,
+      eliminating fingertip tremor while hovering over buttons.
+    - Slow movements receive extra damping for precision.
+    - Fast hand sweeps ramp alpha up for low-latency tracking.
+    - When ``alpha == 1.0`` (smoothing = 0%), acts as an exact raw passthrough.
+    """
+
+    def __init__(
+        self,
+        alpha: float = 0.65,
+        deadband_px: float = 1.5,
+        min_alpha_scale: float = 0.35,
+        max_alpha_scale: float = 1.5,
+        velocity_ref_px: float = 35.0,
+    ) -> None:
+        super().__init__(alpha=alpha)
+        if deadband_px < 0.0:
+            raise ValueError("deadband_px must be >= 0.0")
+        self._deadband_px = float(deadband_px)
+        self._min_alpha_scale = float(min_alpha_scale)
+        self._max_alpha_scale = float(max_alpha_scale)
+        self._velocity_ref_px = max(1.0, float(velocity_ref_px))
+
+    def update(self, x: float, y: float) -> tuple[float, float]:
+        if self._previous is None or self._alpha >= 0.999:
+            self._previous = (float(x), float(y))
+            return self._previous
+
+        prev_x, prev_y = self._previous
+        dist = math.hypot(x - prev_x, y - prev_y)
+        if dist < self._deadband_px:
+            return self._previous
+
+        speed_ratio = min(1.0, (dist - self._deadband_px) / self._velocity_ref_px)
+        scale = self._min_alpha_scale + (self._max_alpha_scale - self._min_alpha_scale) * speed_ratio
+        effective_alpha = max(0.05, min(1.0, self._alpha * scale))
+        inv = 1.0 - effective_alpha
+        smoothed_x = effective_alpha * x + inv * prev_x
+        smoothed_y = effective_alpha * y + inv * prev_y
+        self._previous = (smoothed_x, smoothed_y)
+        return self._previous

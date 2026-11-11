@@ -8,6 +8,12 @@ from vision.landmark_features import (
     INDEX_MCP,
     INDEX_PIP,
     INDEX_TIP,
+    MIDDLE_MCP,
+    MIDDLE_TIP,
+    PINKY_MCP,
+    THUMB_TIP,
+    WRIST,
+    compute_palm_scale,
     extract_hand_features,
     extract_index_fingertip,
     is_index_finger_extended,
@@ -77,4 +83,30 @@ def test_extract_hand_features_reports_extension_and_loss() -> None:
     assert lost.hand_detected is False
     assert lost.index_extended is False
     assert lost.index_tip is None
+    assert lost.palm_scale is None
+
+
+def test_pinch_ratios_are_palm_scale_invariant() -> None:
+    def make_scaled_hand(scale: float) -> HandDetection:
+        pts = [NormalizedPoint(0.5, 0.5) for _ in range(21)]
+        pts[WRIST] = NormalizedPoint(0.5, 0.5 + 0.2 * scale)
+        pts[MIDDLE_MCP] = NormalizedPoint(0.5, 0.5)
+        pts[INDEX_MCP] = NormalizedPoint(0.5 - 0.08 * scale, 0.5)
+        pts[PINKY_MCP] = NormalizedPoint(0.5 + 0.08 * scale, 0.5)
+        pts[THUMB_TIP] = NormalizedPoint(0.5 - 0.02 * scale, 0.5 - 0.1 * scale)
+        pts[INDEX_TIP] = NormalizedPoint(0.5 + 0.02 * scale, 0.5 - 0.1 * scale)
+        pts[MIDDLE_TIP] = NormalizedPoint(0.5 + 0.06 * scale, 0.5 - 0.2 * scale)
+        return HandDetection(landmarks=tuple(pts), handedness="Right", confidence=0.95)
+
+    small_hand = make_scaled_hand(0.5)
+    large_hand = make_scaled_hand(1.5)
+
+    assert compute_palm_scale(small_hand) is not None
+    small_feat = extract_hand_features(small_hand)
+    large_feat = extract_hand_features(large_hand)
+
+    assert small_feat.thumb_index_ratio is not None and large_feat.thumb_index_ratio is not None
+    assert abs(small_feat.thumb_index_ratio - large_feat.thumb_index_ratio) < 1e-6
+    assert small_feat.thumb_middle_ratio is not None and large_feat.thumb_middle_ratio is not None
+    assert abs(small_feat.thumb_middle_ratio - large_feat.thumb_middle_ratio) < 1e-6
 

@@ -2,16 +2,17 @@
 
 Local, privacy-first, real-time hand-gesture controller for Windows.
 
-> **Current Stage:** Phase 2 (Virtual Mouse Movement via Index Fingertip).  
-> OS-level mouse control is **disabled by default** (`os_input_enabled = False`) and requires explicit activation in the UI. Clicks, dragging, and scrolling are not implemented yet.
+> **Current Stage:** Phase 3 (Mouse Gesture Controls: Click, Double-Click, Right-Click, Drag).  
+> OS-level mouse control is **disabled by default** (`os_input_enabled = False`) and requires explicit activation in the UI. Scrolling and advanced gestures are not implemented yet.
 
-## Architecture (Phase 1 & 2)
+## Architecture (Phase 1–3)
 
 - `camera/`: `CameraManager` captures frames on a background thread into a bounded single-slot `LatestFrameBuffer` so stale frames are dropped rather than queued.
-- `vision/`: `HandLandmarkerService` wraps the MediaPipe Hand Landmarker Tasks API (`RunningMode.VIDEO`), `VisionWorker` processes the newest frame off the UI thread, `landmark_features` extracts landmark `8` and validates index extension (`5, 6, 7, 8`), and `coordinate_mapper` maps the calibrated active region to clamped screen pixels.
-- `input_control/`: `InputBackend` interface with `MockInputBackend` (safe testing) and `DesktopInputBackend` (PyAutoGUI), gated by `InputDispatcher`.
+- `vision/`: `HandLandmarkerService` wraps MediaPipe Hand Landmarker Tasks API (`RunningMode.VIDEO`), `VisionWorker` processes the newest frame off the UI thread, `landmark_features` computes index extension (`5, 6, 7, 8`) and palm-scaled pinch ratios (`4–8`, `4–12`), and `coordinate_mapper` maps the calibrated active region to clamped screen pixels.
+- `gestures/`: `gesture_rules` (hysteresis thresholds & conflict filtering), `GestureRecognizer` (temporal debounce), and `GestureStateManager` (finite-state machine for single click, deferred double-click, right-click, drag, and cooldown).
+- `input_control/`: `InputBackend` (`MockInputBackend`, `DesktopInputBackend` via PyAutoGUI), `InputDispatcher` (serialized safety gate & guaranteed `release_all()`), and `ActionMapper`.
 - `utils/`: `ExponentialSmoother` for cursor smoothing and `logging_config` for local logging.
-- `ui/`: `MainWindow` and `CameraView` render the live webcam feed, active cursor region, 21-landmark overlay, calibration/sensitivity/smoothing sliders, explicit OS control toggle, and `Esc` emergency stop.
+- `ui/`: `MainWindow` and `CameraView` render the live webcam feed, active cursor region, pinch indicators, 21-landmark overlay, calibration/gesture sliders, explicit OS control toggle, and `Esc` emergency stop.
 - `app/`: `AppController`, `AppConfig`, `events`, and `application` coordinate lifecycle, `Esc` emergency stop, error handling, and clean shutdown.
 
 ## Setup (Windows, Python 3.14.4)

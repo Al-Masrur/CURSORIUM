@@ -111,3 +111,45 @@ def test_vision_worker_reports_error_and_closes_landmarker() -> None:
     assert len(errors) == 1
     assert "simulated inference error" in errors[0]
 
+
+def test_vision_worker_applies_low_light_gamma_boost_only_on_dark_frames() -> None:
+    class _MeanCapturingLandmarker:
+        def __init__(self) -> None:
+            self.means: list[float] = []
+            self.done = threading.Event()
+
+        def initialize(self) -> None:
+            pass
+
+        def detect(self, frame_rgb: np.ndarray, _ts: int) -> HandDetection | None:
+            self.means.append(float(frame_rgb.mean()))
+            if len(self.means) >= 2:
+                self.done.set()
+            return None
+
+        def close(self) -> None:
+            pass
+
+    buf = LatestFrameBuffer()
+    landmarker = _MeanCapturingLandmarker()
+    worker = VisionWorker(
+        config=AppConfig(low_light_boost=True, mirror_preview=False),
+        frame_buffer=buf,
+        landmarker_factory=lambda: landmarker,  # type: ignore[return-value]
+    )
+    worker.start()
+
+    dark_frame = np.full((16, 16, 3), 20, dtype=np.uint8)
+    buf.put(FramePacket(frame_bgr=dark_frame, timestamp_ms=10, sequence_id=1))
+    deadline = time.monotonic() + 1.0
+    while len(landmarker.means) < 1 and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    bright_frame = np.full((16, 16, 3), 150, dtype=np.uint8)
+    buf.put(FramePacket(frame_bgr=bright_frame, timestamp_ms=43, sequence_id=2))
+    assert landmarker.done.wait(timeout=1.5)
+    worker.stop()
+
+    assert landmarker.means[0] > 40.0  # Dim frame boosted via gamma LUT
+    assert landmarker.means[1] == 150.0  # Normal frame untouched (0 LUT overhead)
+

@@ -78,6 +78,13 @@ class DesktopInputBackend(InputBackend):
             finally:
                 self._held_buttons.discard(button)
 
+    def scroll(self, clicks: int) -> None:
+        with self._lock:
+            if clicks == 0:
+                return
+            api = self._get_api()
+            api.scroll(clicks=int(clicks), _pause=False)
+
     def release_all(self) -> None:
         with self._lock:
             if not self._held_buttons:

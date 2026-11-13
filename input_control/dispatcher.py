@@ -157,6 +157,25 @@ class InputDispatcher:
             self._on_backend_error(error_msg)
         return False
 
+    def scroll(self, clicks: int) -> bool:
+        """Send vertical scroll to the backend only when OS input is explicitly enabled."""
+        if clicks == 0:
+            return False
+
+        error_msg: str | None = None
+        with self._lock:
+            if not self._os_input_enabled:
+                return False
+            try:
+                self._backend.scroll(clicks=int(clicks))
+                return True
+            except Exception as exc:
+                error_msg = self._handle_exception_locked("scroll", exc)
+
+        if error_msg is not None and self._on_backend_error is not None:
+            self._on_backend_error(error_msg)
+        return False
+
     def close(self) -> None:
         """Disable OS input and close the underlying backend safely."""
         with self._lock:

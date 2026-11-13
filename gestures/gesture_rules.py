@@ -28,6 +28,10 @@ class GestureType(str, Enum):
     DRAG_START = "Drag Start"
     DRAG_MOVE = "Drag Move"
     DRAG_END = "Drag End"
+    SCROLL_START = "Scroll Start"
+    SCROLL_MOVE = "Scroll Move"
+    SCROLL_END = "Scroll End"
+    PAUSE_TOGGLED = "Pause Toggled"
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,11 +41,12 @@ class GestureEvent:
     gesture: GestureType
     timestamp_ms: int
     reason: str = ""
+    scroll_delta: int = 0
 
 
 @dataclass(slots=True)
 class GestureRules:
-    """Validated thresholds and timing windows for click, double-click, and drag."""
+    """Validated thresholds and timing windows for click, double-click, drag, scroll, and pause."""
 
     pinch_activate_ratio: float = 0.32
     pinch_release_ratio: float = 0.45
@@ -52,6 +57,11 @@ class GestureRules:
     pinch_smoothing_alpha: float = 1.0
     min_pinch_confidence: float = 0.0
     tracking_loss_grace_ms: int = 0
+    scroll_stable_ms: int = 80
+    scroll_sensitivity: float = 1.0
+    scroll_deadzone: float = 0.015
+    pause_hold_ms: int = 500
+    pause_cooldown_ms: int = 1000
 
     def __post_init__(self) -> None:
         if not 0.10 <= self.pinch_activate_ratio <= 0.80:
@@ -72,6 +82,16 @@ class GestureRules:
             raise ValueError("min_pinch_confidence must be between 0.0 and 1.0")
         if self.tracking_loss_grace_ms < 0:
             raise ValueError("tracking_loss_grace_ms must be >= 0")
+        if self.scroll_stable_ms < 0:
+            raise ValueError("scroll_stable_ms must be >= 0")
+        if not 0.1 <= self.scroll_sensitivity <= 10.0:
+            raise ValueError("scroll_sensitivity must be between 0.1 and 10.0")
+        if not 0.0 <= self.scroll_deadzone <= 0.20:
+            raise ValueError("scroll_deadzone must be between 0.0 and 0.20")
+        if self.pause_hold_ms < 100:
+            raise ValueError("pause_hold_ms must be >= 100")
+        if self.pause_cooldown_ms < 100:
+            raise ValueError("pause_cooldown_ms must be >= 100")
 
 
 def classify_pinch_with_hysteresis(

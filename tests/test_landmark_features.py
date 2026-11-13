@@ -110,3 +110,65 @@ def test_pinch_ratios_are_palm_scale_invariant() -> None:
     assert small_feat.thumb_middle_ratio is not None and large_feat.thumb_middle_ratio is not None
     assert abs(small_feat.thumb_middle_ratio - large_feat.thumb_middle_ratio) < 1e-6
 
+
+def test_scroll_pose_and_open_palm_geometry() -> None:
+    # 21-landmark setup
+    pts = [NormalizedPoint(0.5, 0.8) for _ in range(21)]
+    pts[WRIST] = NormalizedPoint(0.5, 0.8)
+    # Index finger extended (5, 6, 7, 8)
+    pts[5] = NormalizedPoint(0.45, 0.6)
+    pts[6] = NormalizedPoint(0.45, 0.5)
+    pts[7] = NormalizedPoint(0.45, 0.4)
+    pts[8] = NormalizedPoint(0.45, 0.3)
+    # Middle finger extended (9, 10, 11, 12)
+    pts[9] = NormalizedPoint(0.50, 0.6)
+    pts[10] = NormalizedPoint(0.50, 0.5)
+    pts[11] = NormalizedPoint(0.50, 0.4)
+    pts[12] = NormalizedPoint(0.50, 0.3)
+    # Ring folded (13, 14, 15, 16) - curled back toward palm
+    pts[13] = NormalizedPoint(0.55, 0.6)
+    pts[14] = NormalizedPoint(0.55, 0.55)
+    pts[15] = NormalizedPoint(0.55, 0.62)
+    pts[16] = NormalizedPoint(0.55, 0.65)
+    # Pinky folded (17, 18, 19, 20)
+    pts[17] = NormalizedPoint(0.60, 0.6)
+    pts[18] = NormalizedPoint(0.60, 0.55)
+    pts[19] = NormalizedPoint(0.60, 0.62)
+    pts[20] = NormalizedPoint(0.60, 0.65)
+    # Thumb relaxed away from index/middle (not pinching)
+    pts[1] = NormalizedPoint(0.40, 0.75)
+    pts[2] = NormalizedPoint(0.35, 0.70)
+    pts[3] = NormalizedPoint(0.30, 0.65)
+    pts[4] = NormalizedPoint(0.25, 0.60)
+
+    scroll_hand = HandDetection(landmarks=tuple(pts), handedness="Right", confidence=0.95)
+    features = extract_hand_features(scroll_hand)
+    assert features.index_extended is True
+    assert features.middle_extended is True
+    assert features.ring_extended is False
+    assert features.pinky_extended is False
+    assert features.scroll_pose is True
+    assert features.scroll_point is not None
+    assert abs(features.scroll_point.x - 0.475) < 1e-4
+    assert abs(features.scroll_point.y - 0.3) < 1e-4
+    assert features.open_palm is False
+
+    # Now extend ring and pinky straight as well for open palm
+    pts[14] = NormalizedPoint(0.55, 0.5)
+    pts[15] = NormalizedPoint(0.55, 0.4)
+    pts[16] = NormalizedPoint(0.55, 0.3)
+
+    pts[18] = NormalizedPoint(0.60, 0.5)
+    pts[19] = NormalizedPoint(0.60, 0.4)
+    pts[20] = NormalizedPoint(0.60, 0.3)
+
+    palm_hand = HandDetection(landmarks=tuple(pts), handedness="Right", confidence=0.95)
+    palm_features = extract_hand_features(palm_hand)
+    assert palm_features.index_extended is True
+    assert palm_features.middle_extended is True
+    assert palm_features.ring_extended is True
+    assert palm_features.pinky_extended is True
+    assert palm_features.thumb_extended is True
+    assert palm_features.open_palm is True
+    assert palm_features.scroll_pose is False
+

@@ -17,6 +17,7 @@ class MockInputBackend(InputBackend):
         fail_on_move: bool = False,
         fail_on_click: bool = False,
         fail_on_button: bool = False,
+        fail_on_scroll: bool = False,
     ) -> None:
         if screen_width <= 0 or screen_height <= 0:
             raise ValueError("screen_width and screen_height must be positive")
@@ -26,9 +27,11 @@ class MockInputBackend(InputBackend):
         self.fail_on_move = fail_on_move
         self.fail_on_click = fail_on_click
         self.fail_on_button = fail_on_button
+        self.fail_on_scroll = fail_on_scroll
         self.move_history: list[tuple[int, int]] = []
         self.click_history: list[tuple[str, int, tuple[int, int] | None]] = []
         self.button_events: list[tuple[str, str]] = []
+        self.scroll_history: list[int] = []
         self.held_buttons: set[str] = set()
         self.last_position: tuple[int, int] | None = None
         self.release_all_count: int = 0
@@ -64,6 +67,12 @@ class MockInputBackend(InputBackend):
             if button in self.held_buttons:
                 self.held_buttons.remove(button)
                 self.button_events.append(("up", button))
+
+    def scroll(self, clicks: int) -> None:
+        with self._lock:
+            if self.fail_on_scroll:
+                raise RuntimeError("Simulated input backend scroll failure")
+            self.scroll_history.append(int(clicks))
 
     def release_all(self) -> None:
         with self._lock:

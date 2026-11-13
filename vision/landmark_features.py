@@ -10,14 +10,26 @@ import numpy as np
 from app.events import HandDetection, NormalizedPoint
 
 WRIST = 0
+THUMB_CMC = 1
+THUMB_MCP = 2
+THUMB_IP = 3
 THUMB_TIP = 4
 INDEX_MCP = 5
 INDEX_PIP = 6
 INDEX_DIP = 7
 INDEX_TIP = 8
 MIDDLE_MCP = 9
+MIDDLE_PIP = 10
+MIDDLE_DIP = 11
 MIDDLE_TIP = 12
+RING_MCP = 13
+RING_PIP = 14
+RING_DIP = 15
+RING_TIP = 16
 PINKY_MCP = 17
+PINKY_PIP = 18
+PINKY_DIP = 19
+PINKY_TIP = 20
 EXPECTED_LANDMARK_COUNT = 21
 
 _MIN_SEGMENT_LENGTH = 1e-4
@@ -36,9 +48,18 @@ class HandFeatures:
     confidence: float
     thumb_tip: NormalizedPoint | None = None
     middle_tip: NormalizedPoint | None = None
+    ring_tip: NormalizedPoint | None = None
+    pinky_tip: NormalizedPoint | None = None
     palm_scale: float | None = None
     thumb_index_ratio: float | None = None
     thumb_middle_ratio: float | None = None
+    middle_extended: bool = False
+    ring_extended: bool = False
+    pinky_extended: bool = False
+    thumb_extended: bool = False
+    scroll_pose: bool = False
+    open_palm: bool = False
+    scroll_point: NormalizedPoint | None = None
 
 
 def euclidean_distance_2d(a: NormalizedPoint, b: NormalizedPoint) -> float:
@@ -66,23 +87,22 @@ def compute_palm_scale(detection: HandDetection | None) -> float | None:
     return scale
 
 
-def is_index_finger_extended(detection: HandDetection | None) -> bool:
-    """Validate whether the index finger is extended using landmarks 5, 6, 7, and 8.
-
-    Checks three geometric properties in normalized 2D image space so detection is
-    invariant to hand rotation:
-    1. All three bone segments (5->6, 6->7, 7->8) have non-trivial length.
-    2. Successive segments remain aligned (no sharp bend at PIP or DIP).
-    3. Distance from MCP (5) grows monotonically along PIP (6) -> DIP (7) -> TIP (8),
-       and the chord length (5->8) is at least 80% of the polyline length.
-    """
-    if detection is None or len(detection.landmarks) <= INDEX_TIP:
+def is_finger_extended_by_indices(
+    detection: HandDetection | None,
+    mcp_idx: int,
+    pip_idx: int,
+    dip_idx: int,
+    tip_idx: int,
+) -> bool:
+    """Validate whether a 4-joint finger is extended using geometry checks in 2D space."""
+    if detection is None or len(detection.landmarks) <= tip_idx:
         return False
 
-    mcp = detection.landmarks[INDEX_MCP]
-    pip = detection.landmarks[INDEX_PIP]
-    dip = detection.landmarks[INDEX_DIP]
-    tip = detection.landmarks[INDEX_TIP]
+    landmarks = detection.landmarks
+    mcp = landmarks[mcp_idx]
+    pip = landmarks[pip_idx]
+    dip = landmarks[dip_idx]
+    tip = landmarks[tip_idx]
 
     pts = np.array(
         [
@@ -94,9 +114,9 @@ def is_index_finger_extended(detection: HandDetection | None) -> bool:
         dtype=np.float64,
     )
 
-    v1 = pts[1] - pts[0]  # 5 -> 6
-    v2 = pts[2] - pts[1]  # 6 -> 7
-    v3 = pts[3] - pts[2]  # 7 -> 8
+    v1 = pts[1] - pts[0]  # MCP -> PIP
+    v2 = pts[2] - pts[1]  # PIP -> DIP
+    v3 = pts[3] - pts[2]  # DIP -> TIP
 
     len1 = float(np.linalg.norm(v1))
     len2 = float(np.linalg.norm(v2))
@@ -120,8 +140,54 @@ def is_index_finger_extended(detection: HandDetection | None) -> bool:
     return straightness >= _MIN_STRAIGHTNESS_RATIO
 
 
+def is_index_finger_extended(detection: HandDetection | None) -> bool:
+    """Validate whether the index finger is extended using landmarks 5, 6, 7, and 8."""
+    return is_finger_extended_by_indices(
+        detection, INDEX_MCP, INDEX_PIP, INDEX_DIP, INDEX_TIP
+    )
+
+
+def is_middle_finger_extended(detection: HandDetection | None) -> bool:
+    """Validate whether the middle finger is extended using landmarks 9, 10, 11, and 12."""
+    return is_finger_extended_by_indices(
+        detection, MIDDLE_MCP, MIDDLE_PIP, MIDDLE_DIP, MIDDLE_TIP
+    )
+
+
+def is_ring_finger_extended(detection: HandDetection | None) -> bool:
+    """Validate whether the ring finger is extended using landmarks 13, 14, 15, and 16."""
+    return is_finger_extended_by_indices(
+        detection, RING_MCP, RING_PIP, RING_DIP, RING_TIP
+    )
+
+
+def is_pinky_finger_extended(detection: HandDetection | None) -> bool:
+    """Validate whether the pinky finger is extended using landmarks 17, 18, 19, and 20."""
+    return is_finger_extended_by_indices(
+        detection, PINKY_MCP, PINKY_PIP, PINKY_DIP, PINKY_TIP
+    )
+
+
+def is_thumb_finger_extended(detection: HandDetection | None) -> bool:
+    """Validate whether the thumb is extended away from the wrist/palm."""
+    if detection is None or len(detection.landmarks) < EXPECTED_LANDMARK_COUNT:
+        return False
+    landmarks = detection.landmarks
+    wrist = landmarks[WRIST]
+    thumb_mcp = landmarks[THUMB_MCP]
+    thumb_ip = landmarks[THUMB_IP]
+    thumb_tip = landmarks[THUMB_TIP]
+
+    dist_wrist_tip = euclidean_distance_2d(wrist, thumb_tip)
+    dist_wrist_ip = euclidean_distance_2d(wrist, thumb_ip)
+    dist_mcp_tip = euclidean_distance_2d(thumb_mcp, thumb_tip)
+    dist_mcp_ip = euclidean_distance_2d(thumb_mcp, thumb_ip)
+
+    return dist_wrist_tip > dist_wrist_ip and dist_mcp_tip > dist_mcp_ip
+
+
 def extract_hand_features(detection: HandDetection | None) -> HandFeatures:
-    """Extract fingertip positions, palm-normalized pinch ratios, and index extension."""
+    """Extract fingertip positions, palm-normalized pinch ratios, and finger extension states."""
     if detection is None or len(detection.landmarks) < EXPECTED_LANDMARK_COUNT:
         return HandFeatures(
             hand_detected=False,
@@ -134,7 +200,14 @@ def extract_hand_features(detection: HandDetection | None) -> HandFeatures:
     thumb_tip = landmarks[THUMB_TIP]
     index_tip = landmarks[INDEX_TIP]
     middle_tip = landmarks[MIDDLE_TIP]
-    extended = is_index_finger_extended(detection)
+    ring_tip = landmarks[RING_TIP]
+    pinky_tip = landmarks[PINKY_TIP]
+
+    index_ext = is_index_finger_extended(detection)
+    middle_ext = is_middle_finger_extended(detection)
+    ring_ext = is_ring_finger_extended(detection)
+    pinky_ext = is_pinky_finger_extended(detection)
+    thumb_ext = is_thumb_finger_extended(detection)
 
     palm_scale = compute_palm_scale(detection)
     if palm_scale is not None:
@@ -144,14 +217,56 @@ def extract_hand_features(detection: HandDetection | None) -> HandFeatures:
         thumb_index_ratio = None
         thumb_middle_ratio = None
 
+    # Pinch conflict guard: if thumb is actively pinching index or middle, it's not a pure scroll or open palm
+    is_pinching = (
+        (thumb_index_ratio is not None and thumb_index_ratio < 0.40)
+        or (thumb_middle_ratio is not None and thumb_middle_ratio < 0.40)
+    )
+
+    # Scroll pose: Index + Middle extended, Ring + Pinky folded, not pinching
+    scroll_pose = (
+        index_ext
+        and middle_ext
+        and not ring_ext
+        and not pinky_ext
+        and not is_pinching
+    )
+
+    scroll_point: NormalizedPoint | None = None
+    if scroll_pose:
+        scroll_point = NormalizedPoint(
+            x=(index_tip.x + middle_tip.x) / 2.0,
+            y=(index_tip.y + middle_tip.y) / 2.0,
+            z=(index_tip.z + middle_tip.z) / 2.0,
+        )
+
+    # Open palm: all 4 non-thumb fingers extended, thumb extended, not pinching
+    open_palm = (
+        index_ext
+        and middle_ext
+        and ring_ext
+        and pinky_ext
+        and thumb_ext
+        and not is_pinching
+    )
+
     return HandFeatures(
         hand_detected=True,
         index_tip=index_tip,
-        index_extended=extended,
+        index_extended=index_ext,
         confidence=detection.confidence,
         thumb_tip=thumb_tip,
         middle_tip=middle_tip,
+        ring_tip=ring_tip,
+        pinky_tip=pinky_tip,
         palm_scale=palm_scale,
         thumb_index_ratio=thumb_index_ratio,
         thumb_middle_ratio=thumb_middle_ratio,
+        middle_extended=middle_ext,
+        ring_extended=ring_ext,
+        pinky_extended=pinky_ext,
+        thumb_extended=thumb_ext,
+        scroll_pose=scroll_pose,
+        open_palm=open_palm,
+        scroll_point=scroll_point,
     )

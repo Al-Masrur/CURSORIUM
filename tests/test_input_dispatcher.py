@@ -27,6 +27,7 @@ class _FakePyAutoGUI:
         self.clicks: list[tuple[str, int, bool]] = []
         self.downs: list[tuple[str, bool]] = []
         self.ups: list[tuple[str, bool]] = []
+        self.scrolls: list[tuple[int, bool]] = []
 
     def size(self) -> _FakeScreenSize:
         self.size_calls += 1
@@ -43,6 +44,9 @@ class _FakePyAutoGUI:
 
     def mouseUp(self, button: str = "left", _pause: bool = True) -> None:
         self.ups.append((button, _pause))
+
+    def scroll(self, clicks: int, _pause: bool = True) -> None:
+        self.scrolls.append((clicks, _pause))
 
 
 def test_os_input_disabled_by_default_blocks_moves_clicks_and_drag() -> None:
@@ -162,3 +166,31 @@ def test_desktop_backend_caches_screen_size_across_cursor_moves() -> None:
     assert fake_api.size_calls == 1
     assert backend.screen_size() == (1920, 1080)
     assert fake_api.size_calls == 2
+
+
+def test_dispatcher_and_action_mapper_scroll() -> None:
+    backend = MockInputBackend()
+    dispatcher = InputDispatcher(backend=backend, os_input_enabled=False)
+    mapper = ActionMapper(dispatcher)
+
+    # When OS input disabled, scroll is simulated
+    sim = mapper.dispatch((GestureEvent(GestureType.SCROLL_MOVE, 10, scroll_delta=3),), None)
+    assert sim.executed_actions == ()
+    assert "sim" in (sim.action_label or "").lower()
+    assert backend.scroll_history == []
+
+    # When enabled, scroll executes on backend
+    dispatcher.set_enabled(True)
+    res = mapper.dispatch((GestureEvent(GestureType.SCROLL_MOVE, 20, scroll_delta=-2),), None)
+    assert res.executed_actions == ("scroll",)
+    assert backend.scroll_history == [-2]
+
+
+def test_desktop_backend_scroll() -> None:
+    fake_api = _FakePyAutoGUI()
+    backend = DesktopInputBackend(pyautogui_module=fake_api)
+
+    backend.scroll(5)
+    backend.scroll(-3)
+    backend.scroll(0)  # zero is no-op
+    assert fake_api.scrolls == [(5, False), (-3, False)]

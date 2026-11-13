@@ -50,6 +50,13 @@ class AppConfig:
     click_cooldown_ms: int = 200
     tracking_loss_grace_ms: int = 90
 
+    # Phase 4: Scroll and Pause settings
+    scroll_sensitivity: float = 1.0
+    scroll_deadzone: float = 0.015
+    scroll_stable_ms: int = 80
+    pause_hold_ms: int = 500
+    pause_cooldown_ms: int = 1000
+
     def __post_init__(self) -> None:
         self.model_path = Path(self.model_path)
         if self.camera_index < 0:
@@ -99,3 +106,13 @@ class AppConfig:
             raise ValueError("click_cooldown_ms must be >= 0")
         if self.tracking_loss_grace_ms < 0:
             raise ValueError("tracking_loss_grace_ms must be >= 0")
+        if not 0.1 <= self.scroll_sensitivity <= 10.0:
+            raise ValueError("scroll_sensitivity must be between 0.1 and 10.0")
+        if not 0.0 <= self.scroll_deadzone <= 0.20:
+            raise ValueError("scroll_deadzone must be between 0.0 and 0.20")
+        if self.scroll_stable_ms < 0:
+            raise ValueError("scroll_stable_ms must be >= 0")
+        if self.pause_hold_ms < 100:
+            raise ValueError("pause_hold_ms must be >= 100")
+        if self.pause_cooldown_ms < 100:
+            raise ValueError("pause_cooldown_ms must be >= 100")

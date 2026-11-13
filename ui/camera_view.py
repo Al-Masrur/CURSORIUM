@@ -29,6 +29,9 @@ class CameraView(QWidget):
         self._os_control_active: bool = False
         self._active_pinch: str = "None"
         self._dragging: bool = False
+        self._scrolling: bool = False
+        self._scroll_delta: int = 0
+        self._paused: bool = False
         self._placeholder_text: str = (
             "Camera is stopped.\nClick 'Start Camera' to preview webcam & 21 hand landmarks."
         )
@@ -46,6 +49,9 @@ class CameraView(QWidget):
         os_control_active: bool = False,
         active_pinch: str = "None",
         dragging: bool = False,
+        scrolling: bool = False,
+        scroll_delta: int = 0,
+        paused: bool = False,
     ) -> None:
         """Update the displayed RGB frame and tracking overlay on the UI thread."""
         height, width, channels = frame_rgb.shape
@@ -67,6 +73,9 @@ class CameraView(QWidget):
         self._os_control_active = os_control_active
         self._active_pinch = active_pinch
         self._dragging = dragging
+        self._scrolling = scrolling
+        self._scroll_delta = scroll_delta
+        self._paused = paused
         self.update()
 
     def set_show_landmarks(self, enabled: bool) -> None:
@@ -88,6 +97,9 @@ class CameraView(QWidget):
         self._index_extended = False
         self._active_pinch = "None"
         self._dragging = False
+        self._scrolling = False
+        self._scroll_delta = 0
+        self._paused = False
         if message is not None:
             self._placeholder_text = message
         self.update()
@@ -120,7 +132,14 @@ class CameraView(QWidget):
                 index_extended=self._index_extended,
                 active_pinch=self._active_pinch,
                 dragging=self._dragging,
+                scrolling=self._scrolling,
             )
+
+        if self._scrolling:
+            self._draw_scrolling_indicator(painter, target_rect, self._scroll_delta)
+
+        if self._paused:
+            self._draw_paused_overlay(painter, target_rect)
 
     def _fit_rect(self, img_w: int, img_h: int) -> QRectF:
         widget_w = max(1, self.width())
@@ -165,6 +184,7 @@ class CameraView(QWidget):
         index_extended: bool = False,
         active_pinch: str = "None",
         dragging: bool = False,
+        scrolling: bool = False,
     ) -> None:
         points = [
             QPointF(
@@ -206,3 +226,52 @@ class CameraView(QWidget):
             painter.setPen(QPen(QColor("#0f172a"), 1.2))
             painter.setBrush(color)
             painter.drawEllipse(pt, radius, radius)
+
+    @staticmethod
+    def _draw_scrolling_indicator(
+        painter: QPainter,
+        target_rect: QRectF,
+        scroll_delta: int,
+    ) -> None:
+        badge_w, badge_h = 160.0, 34.0
+        badge_rect = QRectF(
+            target_rect.left() + (target_rect.width() - badge_w) / 2.0,
+            target_rect.top() + 16.0,
+            badge_w,
+            badge_h,
+        )
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(14, 165, 233, 200))
+        painter.drawRoundedRect(badge_rect, 8.0, 8.0)
+
+        arrow = "▲" if scroll_delta > 0 else ("▼" if scroll_delta < 0 else "↕")
+        text = f"{arrow} SCROLLING {scroll_delta:+d}" if scroll_delta != 0 else "↕ SCROLL MODE"
+        painter.setPen(QColor("#ffffff"))
+        painter.drawText(badge_rect, Qt.AlignmentFlag.AlignCenter, text)
+
+    @staticmethod
+    def _draw_paused_overlay(
+        painter: QPainter,
+        target_rect: QRectF,
+    ) -> None:
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(0, 0, 0, 140))
+        painter.drawRect(target_rect)
+
+        badge_w, badge_h = 240.0, 50.0
+        badge_rect = QRectF(
+            target_rect.left() + (target_rect.width() - badge_w) / 2.0,
+            target_rect.top() + (target_rect.height() - badge_h) / 2.0,
+            badge_w,
+            badge_h,
+        )
+        painter.setBrush(QColor(30, 41, 59, 230))
+        painter.setPen(QPen(QColor("#94a3b8"), 1.5))
+        painter.drawRoundedRect(badge_rect, 10.0, 10.0)
+
+        painter.setPen(QColor("#f8fafc"))
+        painter.drawText(
+            badge_rect,
+            Qt.AlignmentFlag.AlignCenter,
+            "⏸ TRACKING PAUSED\n(Hold open palm or click Resume)",
+        )

@@ -2,18 +2,18 @@
 
 Local, privacy-first, real-time hand-gesture controller for Windows.
 
-> **Current Stage:** Phase 3 (Mouse Gesture Controls: Click, Double-Click, Right-Click, Drag).  
-> OS-level mouse control is **disabled by default** (`os_input_enabled = False`) and requires explicit activation in the UI. Scrolling and advanced gestures are not implemented yet.
+> **Current Stage:** Phase 4 (Scroll & Pause Controls).  
+> OS-level mouse control is **disabled by default** (`os_input_enabled = False`) and requires explicit activation in the UI. Two-finger vertical displacement drives scrolling, and an open palm held steadily toggles Pause/Resume.
 
-## Architecture (Phase 1–3)
+## Architecture (Phase 1–4)
 
 - `camera/`: `CameraManager` captures frames on a background thread into a bounded single-slot `LatestFrameBuffer` so stale frames are dropped rather than queued.
-- `vision/`: `HandLandmarkerService` wraps MediaPipe Hand Landmarker Tasks API (`RunningMode.VIDEO`), `VisionWorker` processes the newest frame off the UI thread, `landmark_features` computes index extension (`5, 6, 7, 8`) and palm-scaled pinch ratios (`4–8`, `4–12`), and `coordinate_mapper` maps the calibrated active region to clamped screen pixels.
-- `gestures/`: `gesture_rules` (hysteresis thresholds & conflict filtering), `GestureRecognizer` (temporal debounce), and `GestureStateManager` (finite-state machine for single click, deferred double-click, right-click, drag, and cooldown).
-- `input_control/`: `InputBackend` (`MockInputBackend`, `DesktopInputBackend` via PyAutoGUI), `InputDispatcher` (serialized safety gate & guaranteed `release_all()`), and `ActionMapper`.
+- `vision/`: `HandLandmarkerService` wraps MediaPipe Hand Landmarker Tasks API (`RunningMode.VIDEO`), `VisionWorker` processes the newest frame off the UI thread, `landmark_features` computes multi-finger extension (index, middle, ring, pinky, thumb), palm-scaled pinch ratios (`4–8`, `4–12`), two-finger scroll pose detection, and open-palm pause detection, while `coordinate_mapper` maps the calibrated active region to clamped screen pixels.
+- `gestures/`: `gesture_rules` (hysteresis thresholds, scroll dead zone, pause cooldown), `GestureRecognizer` (temporal debounce), and `GestureStateManager` (finite-state machine for single click, deferred double-click, right-click, drag, two-finger vertical scroll, open-palm pause/resume, and conflict priorities).
+- `input_control/`: `InputBackend` (`MockInputBackend`, `DesktopInputBackend` via PyAutoGUI with `scroll`), `InputDispatcher` (serialized safety gate & guaranteed `release_all()`), and `ActionMapper`.
 - `utils/`: `ExponentialSmoother` for cursor smoothing and `logging_config` for local logging.
-- `ui/`: `MainWindow` and `CameraView` render the live webcam feed, active cursor region, pinch indicators, 21-landmark overlay, calibration/gesture sliders, explicit OS control toggle, and `Esc` emergency stop.
-- `app/`: `AppController`, `AppConfig`, `events`, and `application` coordinate lifecycle, `Esc` emergency stop, error handling, and clean shutdown.
+- `ui/`: `MainWindow` and `CameraView` render the live webcam feed, active cursor region, pinch indicators, scroll indicator badge, paused overlay, 21-landmark overlay, calibration/gesture/scroll sliders, pause/resume button & shortcut, explicit OS control toggle, and `Esc` emergency stop.
+- `app/`: `AppController`, `AppConfig`, `events`, and `application` coordinate lifecycle, `Esc` emergency stop, pause/resume toggles, error handling, and clean shutdown.
 
 ## Setup (Windows, Python 3.14.4)
 

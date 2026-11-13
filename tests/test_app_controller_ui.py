@@ -109,6 +109,24 @@ class _ControllableLandmarker:
             pts[INDEX_TIP] = NormalizedPoint(x=0.45, y=0.35)
             pts[THUMB_TIP] = NormalizedPoint(x=0.50, y=0.55)
             pts[MIDDLE_TIP] = NormalizedPoint(x=0.51, y=0.55)
+        elif self.mode == "scroll":
+            pts[INDEX_MCP] = NormalizedPoint(x=0.45, y=self.tip_y + 0.3)
+            pts[INDEX_PIP] = NormalizedPoint(x=0.45, y=self.tip_y + 0.2)
+            pts[INDEX_DIP] = NormalizedPoint(x=0.45, y=self.tip_y + 0.1)
+            pts[INDEX_TIP] = NormalizedPoint(x=0.45, y=self.tip_y)
+            pts[9] = NormalizedPoint(x=0.50, y=self.tip_y + 0.3)
+            pts[10] = NormalizedPoint(x=0.50, y=self.tip_y + 0.2)
+            pts[11] = NormalizedPoint(x=0.50, y=self.tip_y + 0.1)
+            pts[MIDDLE_TIP] = NormalizedPoint(x=0.50, y=self.tip_y)
+            pts[13] = NormalizedPoint(x=0.55, y=0.60)
+            pts[14] = NormalizedPoint(x=0.55, y=0.55)
+            pts[15] = NormalizedPoint(x=0.55, y=0.62)
+            pts[16] = NormalizedPoint(x=0.55, y=0.65)
+            pts[17] = NormalizedPoint(x=0.60, y=0.60)
+            pts[18] = NormalizedPoint(x=0.60, y=0.55)
+            pts[19] = NormalizedPoint(x=0.60, y=0.62)
+            pts[20] = NormalizedPoint(x=0.60, y=0.65)
+            pts[THUMB_TIP] = NormalizedPoint(x=0.30, y=0.60)
         else:
             pts[INDEX_MCP] = NormalizedPoint(x=0.5, y=0.6)
             pts[INDEX_PIP] = NormalizedPoint(x=0.5, y=0.5)
@@ -448,3 +466,66 @@ def test_phase3_gestures_clicks_drag_safety_and_ui(
     assert controller.is_running is False
     assert mock_backend.held_buttons == set()
     assert mock_backend.closed is True
+
+
+def test_phase4_scroll_pause_controls_and_ui(qt_app: QApplication) -> None:
+    config = AppConfig(
+        os_input_enabled=True,
+        pinch_activate_ratio=0.32,
+        pinch_release_ratio=0.45,
+        pinch_stable_ms=10,
+        drag_hold_ms=150,
+        scroll_stable_ms=20,
+        scroll_deadzone=0.015,
+        scroll_sensitivity=1.0,
+    )
+    mock_backend = MockInputBackend(screen_width=1920, screen_height=1080)
+    capture = _MockCapture(opened=True)
+    landmarker = _ControllableLandmarker()
+
+    controller = AppController(
+        config=config,
+        capture_factory=lambda _idx: capture,
+        landmarker_factory=lambda: landmarker,
+        input_backend=mock_backend,
+        escape_key_checker=lambda: False,
+    )
+    window = MainWindow(controller=controller)
+    window.show()
+    qt_app.processEvents()
+
+    # 1. Verify sliders update settings
+    window.scroll_sensitivity_slider.setValue(20)
+    qt_app.processEvents()
+    assert abs(controller.config.scroll_sensitivity - 2.0) < 1e-4
+    assert window.scroll_sensitivity_value_label.text() == "2.0x"
+
+    window.scroll_deadzone_slider.setValue(25)
+    qt_app.processEvents()
+    assert abs(controller.config.scroll_deadzone - 0.025) < 1e-4
+    assert window.scroll_deadzone_value_label.text() == "0.025"
+
+    # Start camera
+    window.start_stop_button.click()
+    qt_app.processEvents()
+    time.sleep(0.05)
+    qt_app.processEvents()
+
+    # 2. Toggle pause via UI button
+    assert controller.is_paused is False
+    window.pause_resume_button.click()
+    qt_app.processEvents()
+    assert controller.is_paused is True
+    assert window.pause_resume_button.isChecked() is True
+    assert "Resume Tracking" in window.pause_resume_button.text()
+    assert "Paused" in window.tracking_mode_label.text()
+
+    # Toggle pause via shortcut P
+    window.pause_shortcut.activated.emit()
+    qt_app.processEvents()
+    assert controller.is_paused is False
+    assert window.pause_resume_button.isChecked() is False
+    assert "Pause Tracking" in window.pause_resume_button.text()
+
+    window.close()
+    qt_app.processEvents()

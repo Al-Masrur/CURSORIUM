@@ -32,6 +32,10 @@ class InputBackend(ABC):
     def release_all(self) -> None:
         """Release any held input state safely. Must be safe to call repeatedly."""
 
+    @abstractmethod
+    def scroll(self, clicks: int) -> None:
+        """Execute vertical mouse scroll by the specified number of wheel clicks (positive=up, negative=down)."""
+
     def close(self) -> None:
         """Release held inputs and clean up backend resources."""
         self.release_all()

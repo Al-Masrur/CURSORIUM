@@ -23,8 +23,8 @@ from app.events import (
 )
 from camera.camera_manager import CameraManager, CaptureFactory
 from camera.frame_buffer import LatestFrameBuffer
-from gestures.gesture_rules import GestureRules
-from gestures.state_manager import GestureStateManager
+from gestures.gesture_rules import GestureRules, GestureType
+from gestures.state_manager import GestureFSMState, GestureStateManager
 from input_control.action_mapper import ActionMapper
 from input_control.backend import InputBackend
 from input_control.desktop_backend import DesktopInputBackend
@@ -60,6 +60,7 @@ class AppController(QObject):
     os_control_changed = Signal(bool)
     emergency_stopped = Signal()
     calibration_changed = Signal(object)
+    pause_changed = Signal(bool)
 
     def __init__(
         self,
@@ -192,6 +193,30 @@ class AppController(QObject):
     def latest_cursor_state(self) -> CursorState:
         with self._state_lock:
             return self._latest_cursor_state
+
+    @property
+    def is_paused(self) -> bool:
+        with self._gesture_lock:
+            return self._gesture_state_manager.is_paused
+
+    def set_paused(self, paused: bool) -> None:
+        """Explicitly pause or resume hand gesture tracking."""
+        timestamp_ms = time.monotonic_ns() // 1_000_000
+        with self._gesture_lock:
+            events = self._gesture_state_manager.set_paused(paused, timestamp_ms=timestamp_ms)
+        if paused:
+            self._dispatcher.release_all()
+        if events:
+            dispatch_result = self._action_mapper.dispatch(events, None)
+            if dispatch_result.action_label:
+                with self._state_lock:
+                    self._last_action_label = dispatch_result.action_label
+                    self._last_action_until_ms = timestamp_ms + _ACTION_DISPLAY_TTL_MS
+        self.pause_changed.emit(paused)
+
+    def toggle_pause(self) -> None:
+        """Toggle pause/resume tracking state."""
+        self.set_paused(not self.is_paused)
 
     def start(self) -> None:
         """Start webcam capture and MediaPipe hand tracking."""
@@ -345,7 +370,32 @@ class AppController(QObject):
             pinch_smoothing_alpha=self._config.pinch_smoothing_alpha,
             min_pinch_confidence=self._config.min_pinch_confidence,
             tracking_loss_grace_ms=self._config.tracking_loss_grace_ms,
+            scroll_stable_ms=self._config.scroll_stable_ms,
+            scroll_sensitivity=self._config.scroll_sensitivity,
+            scroll_deadzone=self._config.scroll_deadzone,
+            pause_hold_ms=self._config.pause_hold_ms,
+            pause_cooldown_ms=self._config.pause_cooldown_ms,
         )
+
+    def set_scroll_sensitivity(self, sensitivity: float) -> None:
+        """Update scroll displacement sensitivity."""
+        new_rules = replace(
+            self._build_gesture_rules(),
+            scroll_sensitivity=sensitivity,
+        )
+        self._config.scroll_sensitivity = sensitivity
+        with self._gesture_lock:
+            self._gesture_state_manager.update_rules(new_rules)
+
+    def set_scroll_deadzone(self, deadzone: float) -> None:
+        """Update scroll vertical deadzone threshold."""
+        new_rules = replace(
+            self._build_gesture_rules(),
+            scroll_deadzone=deadzone,
+        )
+        self._config.scroll_deadzone = deadzone
+        with self._gesture_lock:
+            self._gesture_state_manager.update_rules(new_rules)
 
     def set_pinch_thresholds(self, activate_ratio: float, release_ratio: float) -> None:
         """Update palm-normalized pinch activation and release thresholds."""
@@ -451,6 +501,10 @@ class AppController(QObject):
         with self._gesture_lock:
             state_update = self._gesture_state_manager.update(features, result.timestamp_ms)
 
+        for event in state_update.events:
+            if event.gesture == GestureType.PAUSE_TOGGLED:
+                self.pause_changed.emit(state_update.state == GestureFSMState.PAUSED)
+
         os_active = self._dispatcher.is_enabled and self.is_running
 
         if state_update.cursor_should_move and features.index_tip is not None:
@@ -461,7 +515,10 @@ class AppController(QObject):
                 self._mapper.reset_smoothing()
 
         dispatch_result = self._action_mapper.dispatch(state_update.events, mapped_pos)
-        if not features.hand_detected and not state_update.dragging:
+        if (
+            (not features.hand_detected and not state_update.dragging)
+            or state_update.state == GestureFSMState.PAUSED
+        ):
             self._dispatcher.release_all()
 
         with self._state_lock:
@@ -481,6 +538,10 @@ class AppController(QObject):
             mode = ControlMode.EMERGENCY_STOPPED
         elif not os_active:
             mode = ControlMode.DISABLED
+        elif state_update.state == GestureFSMState.PAUSED:
+            mode = ControlMode.PAUSED
+        elif state_update.state == GestureFSMState.SCROLLING:
+            mode = ControlMode.SCROLLING
         elif state_update.dragging:
             mode = ControlMode.DRAGGING
         elif state_update.cursor_should_move:
@@ -498,6 +559,9 @@ class AppController(QObject):
             last_action=action_label,
             dragging=state_update.dragging,
             active_pinch=state_update.active_pinch.value,
+            scrolling=state_update.scrolling,
+            scroll_delta=state_update.scroll_delta,
+            paused=state_update.state == GestureFSMState.PAUSED,
         )
 
         with self._state_lock:

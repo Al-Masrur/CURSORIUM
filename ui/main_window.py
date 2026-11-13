@@ -33,8 +33,8 @@ class MainWindow(QMainWindow):
     ) -> None:
         super().__init__(parent)
         self._controller = controller
-        self.setWindowTitle("HandPilot — Phase 3 (Mouse Gesture Controls)")
-        self.resize(1020, 800)
+        self.setWindowTitle("HandPilot — Phase 4 (Mouse, Scroll & Pause Controls)")
+        self.resize(1020, 840)
 
         self._build_ui()
         self._connect_signals()
@@ -57,6 +57,10 @@ class MainWindow(QMainWindow):
         self.os_control_button.setCheckable(True)
         self.os_control_button.setMinimumWidth(185)
 
+        self.pause_resume_button = QPushButton("Pause Tracking", central)
+        self.pause_resume_button.setCheckable(True)
+        self.pause_resume_button.setMinimumWidth(130)
+
         camera_label = QLabel("Camera:", central)
         self.camera_selector = QComboBox(central)
         for index in range(4):
@@ -69,6 +73,7 @@ class MainWindow(QMainWindow):
 
         controls_layout.addWidget(self.start_stop_button)
         controls_layout.addWidget(self.os_control_button)
+        controls_layout.addWidget(self.pause_resume_button)
         controls_layout.addWidget(camera_label)
         controls_layout.addWidget(self.camera_selector)
         controls_layout.addWidget(self.mirror_checkbox)
@@ -173,6 +178,34 @@ class MainWindow(QMainWindow):
         gesture_layout.addLayout(drag_box, stretch=1)
         gesture_layout.addLayout(dbl_box, stretch=1)
 
+        # Phase 4 Scroll sensitivity & dead zone settings panel
+        scroll_group = QGroupBox("Scroll Gesture Settings", central)
+        scroll_layout = QHBoxLayout(scroll_group)
+        scroll_layout.setSpacing(16)
+
+        scroll_sens_box = QHBoxLayout()
+        scroll_sens_title = QLabel("Scroll Speed:", scroll_group)
+        self.scroll_sensitivity_slider = QSlider(Qt.Orientation.Horizontal, scroll_group)
+        self.scroll_sensitivity_slider.setRange(2, 30)
+        self.scroll_sensitivity_value_label = QLabel("1.0x", scroll_group)
+        self.scroll_sensitivity_value_label.setMinimumWidth(38)
+        scroll_sens_box.addWidget(scroll_sens_title)
+        scroll_sens_box.addWidget(self.scroll_sensitivity_slider)
+        scroll_sens_box.addWidget(self.scroll_sensitivity_value_label)
+
+        deadzone_box = QHBoxLayout()
+        deadzone_title = QLabel("Dead Zone:", scroll_group)
+        self.scroll_deadzone_slider = QSlider(Qt.Orientation.Horizontal, scroll_group)
+        self.scroll_deadzone_slider.setRange(5, 50)
+        self.scroll_deadzone_value_label = QLabel("0.015", scroll_group)
+        self.scroll_deadzone_value_label.setMinimumWidth(40)
+        deadzone_box.addWidget(deadzone_title)
+        deadzone_box.addWidget(self.scroll_deadzone_slider)
+        deadzone_box.addWidget(self.scroll_deadzone_value_label)
+
+        scroll_layout.addLayout(scroll_sens_box, stretch=1)
+        scroll_layout.addLayout(deadzone_box, stretch=1)
+
         # Primary status row
         status_layout = QHBoxLayout()
         status_layout.setSpacing(14)
@@ -197,7 +230,7 @@ class MainWindow(QMainWindow):
         self.gesture_status_label = QLabel("Gesture: Idle", central)
         self.action_status_label = QLabel("Action: None", central)
         gesture_help_label = QLabel(
-            "Gestures: Thumb+Index = Click / Double-Click / Hold Drag · Thumb+Middle = Right-Click",
+            "Gestures: 1-Finger = Cursor · Pinch = Click/Drag · 2-Fingers = Scroll · Open Palm = Pause/Resume",
             central,
         )
         gesture_help_label.setStyleSheet("color: #94a3b8;")
@@ -208,7 +241,7 @@ class MainWindow(QMainWindow):
         gesture_status_layout.addWidget(gesture_help_label)
 
         self.notice_label = QLabel(
-            "Tip: Extend index finger to steer cursor. Press Esc anytime to stop OS control.",
+            "Tip: Press Esc anytime to stop OS control. Press P or hold Open Palm to Pause/Resume tracking.",
             central,
         )
         self.notice_label.setStyleSheet("color: #94a3b8;")
@@ -222,6 +255,7 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(self.camera_view, stretch=1)
         root_layout.addWidget(settings_group)
         root_layout.addWidget(gesture_group)
+        root_layout.addWidget(scroll_group)
         root_layout.addLayout(status_layout)
         root_layout.addLayout(gesture_status_layout)
         root_layout.addWidget(self.notice_label)
@@ -231,10 +265,12 @@ class MainWindow(QMainWindow):
 
         # In-window Esc shortcut complements global Windows Esc polling.
         self.escape_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
+        self.pause_shortcut = QShortcut(QKeySequence(Qt.Key.Key_P), self)
 
     def _connect_signals(self) -> None:
         self.start_stop_button.clicked.connect(self._on_start_stop_clicked)
         self.os_control_button.toggled.connect(self._on_os_control_toggled)
+        self.pause_resume_button.clicked.connect(self._on_pause_button_clicked)
         self.camera_selector.currentIndexChanged.connect(self._on_camera_changed)
         self.mirror_checkbox.toggled.connect(self._controller.set_mirror_preview)
         self.landmarks_checkbox.toggled.connect(self._on_landmarks_toggled)
@@ -249,8 +285,11 @@ class MainWindow(QMainWindow):
         self.pinch_release_slider.valueChanged.connect(self._on_pinch_threshold_changed)
         self.drag_hold_slider.valueChanged.connect(self._on_drag_hold_changed)
         self.double_click_slider.valueChanged.connect(self._on_double_click_changed)
+        self.scroll_sensitivity_slider.valueChanged.connect(self._on_scroll_sensitivity_changed)
+        self.scroll_deadzone_slider.valueChanged.connect(self._on_scroll_deadzone_changed)
 
         self.escape_shortcut.activated.connect(self._controller.emergency_stop)
+        self.pause_shortcut.activated.connect(self._controller.toggle_pause)
 
         self._controller.preview_available.connect(self._on_preview_available)
         self._controller.status_changed.connect(self._on_status_changed)
@@ -258,6 +297,7 @@ class MainWindow(QMainWindow):
         self._controller.os_control_changed.connect(self._on_os_control_changed)
         self._controller.emergency_stopped.connect(self._on_emergency_stopped)
         self._controller.calibration_changed.connect(self._on_calibration_changed)
+        self._controller.pause_changed.connect(self._on_pause_changed)
 
     def _sync_initial_state(self) -> None:
         cfg = self._controller.config
@@ -273,6 +313,9 @@ class MainWindow(QMainWindow):
             self.pinch_release_slider,
             self.drag_hold_slider,
             self.double_click_slider,
+            self.scroll_sensitivity_slider,
+            self.scroll_deadzone_slider,
+            self.pause_resume_button,
         )
         for widget in widgets:
             widget.blockSignals(True)
@@ -311,6 +354,18 @@ class MainWindow(QMainWindow):
 
             self.double_click_slider.setValue(cfg.double_click_interval_ms)
             self.double_click_value_label.setText(f"{cfg.double_click_interval_ms} ms")
+
+            scroll_sens_val = int(round(cfg.scroll_sensitivity * 10))
+            self.scroll_sensitivity_slider.setValue(scroll_sens_val)
+            self.scroll_sensitivity_value_label.setText(f"{cfg.scroll_sensitivity:.1f}x")
+
+            deadzone_val = int(round(cfg.scroll_deadzone * 1000))
+            self.scroll_deadzone_slider.setValue(deadzone_val)
+            self.scroll_deadzone_value_label.setText(f"{cfg.scroll_deadzone:.3f}")
+
+            is_paused = self._controller.is_paused
+            self.pause_resume_button.setChecked(is_paused)
+            self.pause_resume_button.setText("Resume Tracking" if is_paused else "Pause Tracking")
 
             self.camera_view.set_active_region(self._controller.active_region)
         finally:
@@ -414,6 +469,39 @@ class MainWindow(QMainWindow):
         self.double_click_value_label.setText(f"{value} ms")
         self._controller.set_double_click_interval_ms(value)
 
+    @Slot(int)
+    def _on_scroll_sensitivity_changed(self, value: int) -> None:
+        sensitivity = value / 10.0
+        self.scroll_sensitivity_value_label.setText(f"{sensitivity:.1f}x")
+        self._controller.set_scroll_sensitivity(sensitivity)
+
+    @Slot(int)
+    def _on_scroll_deadzone_changed(self, value: int) -> None:
+        deadzone = value / 1000.0
+        self.scroll_deadzone_value_label.setText(f"{deadzone:.3f}")
+        self._controller.set_scroll_deadzone(deadzone)
+
+    @Slot()
+    def _on_pause_button_clicked(self) -> None:
+        self._controller.toggle_pause()
+
+    @Slot(bool)
+    def _on_pause_changed(self, paused: bool) -> None:
+        self.pause_resume_button.blockSignals(True)
+        try:
+            self.pause_resume_button.setChecked(paused)
+            if paused:
+                self.pause_resume_button.setText("Resume Tracking")
+                self.pause_resume_button.setStyleSheet(
+                    "background-color: #f59e0b; color: #000; font-weight: bold;"
+                )
+                self.tracking_mode_label.setText("Mode: Tracking Paused")
+            else:
+                self.pause_resume_button.setText("Pause Tracking")
+                self.pause_resume_button.setStyleSheet("")
+        finally:
+            self.pause_resume_button.blockSignals(False)
+
     @Slot()
     def _on_calibrate_center_clicked(self) -> None:
         if self._controller.calibrate_center_on_hand():
@@ -448,6 +536,9 @@ class MainWindow(QMainWindow):
         os_active = cursor.os_input_active if cursor is not None else False
         active_pinch = cursor.active_pinch if cursor is not None else "None"
         dragging = cursor.dragging if cursor is not None else False
+        scrolling = cursor.scrolling if cursor is not None else False
+        scroll_delta = cursor.scroll_delta if cursor is not None else 0
+        paused = (cursor.paused if cursor is not None else False) or self._controller.is_paused
 
         self.camera_view.update_frame(
             frame_rgb,
@@ -457,6 +548,9 @@ class MainWindow(QMainWindow):
             os_control_active=os_active,
             active_pinch=active_pinch,
             dragging=dragging,
+            scrolling=scrolling,
+            scroll_delta=scroll_delta,
+            paused=paused,
         )
 
         if result.hand_detected and result.detection is not None:
@@ -475,7 +569,10 @@ class MainWindow(QMainWindow):
             self.hand_status_label.setStyleSheet("color: #cbd5e1;")
 
         if cursor is not None:
-            self.tracking_mode_label.setText(f"Mode: {cursor.mode.value}")
+            if self._controller.is_paused or cursor.paused:
+                self.tracking_mode_label.setText("Mode: Tracking Paused")
+            else:
+                self.tracking_mode_label.setText(f"Mode: {cursor.mode.value}")
             if cursor.mapped_position is not None:
                 px, py = cursor.mapped_position
                 suffix = "" if cursor.os_input_active else " (sim)"

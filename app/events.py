@@ -24,6 +24,8 @@ class ControlMode(str, Enum):
     STANDBY = "Standby (No Extended Index)"
     CURSOR = "Cursor Tracking"
     DRAGGING = "Dragging"
+    SCROLLING = "Scrolling"
+    PAUSED = "Tracking Paused"
     EMERGENCY_STOPPED = "Emergency Stopped (Esc)"
 
 
@@ -67,6 +69,9 @@ class CursorState:
     last_action: str = "None"
     dragging: bool = False
     active_pinch: str = "None"
+    scrolling: bool = False
+    scroll_delta: int = 0
+    paused: bool = False
 
 
 @dataclass(frozen=True, slots=True)

@@ -14,15 +14,23 @@ def _features(
     thumb_middle_ratio: float = 0.80,
     hand_detected: bool = True,
     index_extended: bool = True,
+    middle_extended: bool = False,
+    scroll_pose: bool = False,
+    scroll_point: NormalizedPoint | None = None,
+    open_palm: bool = False,
 ) -> HandFeatures:
     return HandFeatures(
         hand_detected=hand_detected,
         index_tip=NormalizedPoint(0.5, 0.5) if hand_detected else None,
         index_extended=index_extended,
+        middle_extended=middle_extended,
         confidence=0.95 if hand_detected else 0.0,
         palm_scale=0.2 if hand_detected else None,
         thumb_index_ratio=thumb_index_ratio if hand_detected else None,
         thumb_middle_ratio=thumb_middle_ratio if hand_detected else None,
+        scroll_pose=scroll_pose,
+        scroll_point=scroll_point,
+        open_palm=open_palm,
     )
 
 
@@ -182,4 +190,152 @@ def test_drag_survives_brief_dropout_within_grace_window_and_releases_after() ->
     expired = fsm.update(_features(hand_detected=False), timestamp_ms=520)
     assert fsm.is_dragging is False
     assert [e.gesture for e in expired.events] == [GestureType.DRAG_END]
+
+
+def test_scroll_mode_detection_displacement_and_release() -> None:
+    rules = GestureRules(scroll_stable_ms=50, scroll_deadzone=0.02, scroll_sensitivity=1.0)
+    fsm = GestureStateManager(rules=rules)
+
+    # 1-frame scroll pose does not immediately enter scroll (needs 50ms)
+    fsm.update(
+        _features(scroll_pose=True, scroll_point=NormalizedPoint(0.5, 0.5)),
+        timestamp_ms=0,
+    )
+    assert fsm.is_scrolling is False
+
+    # After 50ms stable pose -> SCROLLING active, emits SCROLL_START
+    res = fsm.update(
+        _features(scroll_pose=True, scroll_point=NormalizedPoint(0.5, 0.5)),
+        timestamp_ms=60,
+    )
+    assert fsm.is_scrolling is True
+    assert [e.gesture for e in res.events] == [GestureType.SCROLL_START]
+
+    # Small displacement within dead zone (< 0.02) does not emit scroll
+    deadzone_move = fsm.update(
+        _features(scroll_pose=True, scroll_point=NormalizedPoint(0.5, 0.51)),
+        timestamp_ms=90,
+    )
+    assert [e.gesture for e in deadzone_move.events] == []
+
+    # Significant displacement upward (y = 0.5 -> 0.35, dy = -0.15) emits positive SCROLL_MOVE (scroll up)
+    up_move = fsm.update(
+        _features(scroll_pose=True, scroll_point=NormalizedPoint(0.5, 0.35)),
+        timestamp_ms=120,
+    )
+    scroll_events = [e for e in up_move.events if e.gesture == GestureType.SCROLL_MOVE]
+    assert len(scroll_events) >= 1
+    assert scroll_events[0].scroll_delta > 0
+
+    # Significant displacement downward emits negative SCROLL_MOVE (scroll down)
+    down_move = fsm.update(
+        _features(scroll_pose=True, scroll_point=NormalizedPoint(0.5, 0.60)),
+        timestamp_ms=150,
+    )
+    down_events = [e for e in down_move.events if e.gesture == GestureType.SCROLL_MOVE]
+    assert len(down_events) >= 1
+    assert down_events[0].scroll_delta < 0
+
+    # Releasing scroll pose exits scrolling with SCROLL_END
+    release = fsm.update(
+        _features(scroll_pose=False, scroll_point=None),
+        timestamp_ms=180,
+    )
+    assert fsm.is_scrolling is False
+    assert [e.gesture for e in release.events] == [GestureType.SCROLL_END]
+
+
+def test_scroll_mode_suppresses_clicks_and_drag_suppresses_scroll() -> None:
+    rules = GestureRules(scroll_stable_ms=30, drag_hold_ms=100)
+    fsm = GestureStateManager(rules=rules)
+
+    # 1. While scrolling, accidental pinch does not trigger click
+    fsm.update(
+        _features(scroll_pose=True, scroll_point=NormalizedPoint(0.5, 0.5)),
+        timestamp_ms=0,
+    )
+    fsm.update(
+        _features(scroll_pose=True, scroll_point=NormalizedPoint(0.5, 0.5)),
+        timestamp_ms=40,
+    )
+    assert fsm.is_scrolling is True
+
+    # Accidental pinch while scrolling pose remains active
+    pinch_during_scroll = fsm.update(
+        _features(scroll_pose=True, scroll_point=NormalizedPoint(0.5, 0.5), thumb_index_ratio=0.20),
+        timestamp_ms=80,
+    )
+    assert fsm.is_scrolling is True
+    assert GestureType.LEFT_CLICK not in [e.gesture for e in pinch_during_scroll.events]
+    assert GestureType.PINCH_HOLD not in [e.gesture for e in pinch_during_scroll.events]
+
+    # Reset
+    fsm.reset(timestamp_ms=200)
+
+    # 2. While dragging, scroll pose is suppressed
+    fsm.update(_features(thumb_index_ratio=0.20), timestamp_ms=300)
+    fsm.update(_features(thumb_index_ratio=0.20), timestamp_ms=350)
+    fsm.update(_features(thumb_index_ratio=0.20), timestamp_ms=460)
+    assert fsm.is_dragging is True
+
+    # Candidate scroll pose while actively dragging
+    drag_move = fsm.update(
+        _features(thumb_index_ratio=0.20, scroll_pose=True, scroll_point=NormalizedPoint(0.5, 0.5)),
+        timestamp_ms=500,
+    )
+    assert fsm.is_dragging is True
+    assert fsm.is_scrolling is False
+    assert GestureType.SCROLL_START not in [e.gesture for e in drag_move.events]
+
+
+def test_open_palm_pause_and_resume_toggle_with_cooldown() -> None:
+    rules = GestureRules(pause_hold_ms=200, pause_cooldown_ms=400)
+    fsm = GestureStateManager(rules=rules)
+
+    # Open palm held for less than 200ms -> not paused yet
+    fsm.update(_features(open_palm=True), timestamp_ms=0)
+    res = fsm.update(_features(open_palm=True), timestamp_ms=100)
+    assert fsm.is_paused is False
+    assert GestureType.PAUSE_TOGGLED not in [e.gesture for e in res.events]
+
+    # Hold past 200ms -> pauses!
+    paused = fsm.update(_features(open_palm=True), timestamp_ms=220)
+    assert fsm.is_paused is True
+    assert [e.gesture for e in paused.events] == [GestureType.PAUSE_TOGGLED]
+    assert paused.events[0].reason == "paused"
+
+    # Still holding palm inside cooldown window (< 220 + 400 = 620ms) -> remains paused, does not rapidly oscillate
+    still_paused = fsm.update(_features(open_palm=True), timestamp_ms=350)
+    assert fsm.is_paused is True
+    assert [e.gesture for e in still_paused.events] == []
+
+    # After cooldown expires, continuing open palm toggles resume
+    resumed = fsm.update(_features(open_palm=True), timestamp_ms=650)
+    assert fsm.is_paused is False
+    assert [e.gesture for e in resumed.events] == [GestureType.PAUSE_TOGGLED]
+    assert resumed.events[0].reason == "resumed"
+
+
+def test_pause_suppresses_all_gestures_and_releases_held_buttons() -> None:
+    rules = GestureRules(drag_hold_ms=100)
+    fsm = GestureStateManager(rules=rules)
+
+    # Start drag (pinch confirmed at 50ms, drag confirmed at 50+100=150ms)
+    fsm.update(_features(thumb_index_ratio=0.20), timestamp_ms=0)
+    fsm.update(_features(thumb_index_ratio=0.20), timestamp_ms=50)
+    fsm.update(_features(thumb_index_ratio=0.20), timestamp_ms=160)
+    assert fsm.is_dragging is True
+
+    # Programmatic set_paused releases drag safely
+    events = fsm.set_paused(True, timestamp_ms=200)
+    assert fsm.is_paused is True
+    assert fsm.is_dragging is False
+    assert GestureType.DRAG_END in [e.gesture for e in events]
+    assert GestureType.PAUSE_TOGGLED in [e.gesture for e in events]
+
+    # While paused, pinch or movement updates produce no cursor movement or clicks
+    move_attempt = fsm.update(_features(thumb_index_ratio=0.20, index_extended=True), timestamp_ms=250)
+    assert move_attempt.cursor_should_move is False
+    assert move_attempt.events == ()
+    assert fsm.is_dragging is False
 

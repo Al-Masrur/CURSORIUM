@@ -404,6 +404,7 @@ class AppController(QObject):
             scroll_stable_ms=self._config.scroll_stable_ms,
             scroll_sensitivity=self._config.scroll_sensitivity,
             scroll_deadzone=self._config.scroll_deadzone,
+            scroll_release_grace_ms=self._config.scroll_release_grace_ms,
             pause_hold_ms=self._config.pause_hold_ms,
             pause_cooldown_ms=self._config.pause_cooldown_ms,
         )

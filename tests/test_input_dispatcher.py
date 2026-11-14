@@ -193,4 +193,12 @@ def test_desktop_backend_scroll() -> None:
     backend.scroll(5)
     backend.scroll(-3)
     backend.scroll(0)  # zero is no-op
-    assert fake_api.scrolls == [(5, False), (-3, False)]
+    assert fake_api.scrolls == [
+        (5 * backend.wheel_multiplier, False),
+        (-3 * backend.wheel_multiplier, False),
+    ]
+
+    # Explicit multiplier override
+    custom_backend = DesktopInputBackend(pyautogui_module=fake_api, wheel_multiplier=1)
+    custom_backend.scroll(4)
+    assert fake_api.scrolls[-1] == (4, False)

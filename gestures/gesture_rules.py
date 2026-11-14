@@ -60,6 +60,7 @@ class GestureRules:
     scroll_stable_ms: int = 80
     scroll_sensitivity: float = 1.0
     scroll_deadzone: float = 0.015
+    scroll_release_grace_ms: int = 0
     pause_hold_ms: int = 500
     pause_cooldown_ms: int = 1000
 
@@ -88,6 +89,8 @@ class GestureRules:
             raise ValueError("scroll_sensitivity must be between 0.1 and 10.0")
         if not 0.0 <= self.scroll_deadzone <= 0.20:
             raise ValueError("scroll_deadzone must be between 0.0 and 0.20")
+        if self.scroll_release_grace_ms < 0:
+            raise ValueError("scroll_release_grace_ms must be >= 0")
         if self.pause_hold_ms < 100:
             raise ValueError("pause_hold_ms must be >= 100")
         if self.pause_cooldown_ms < 100:

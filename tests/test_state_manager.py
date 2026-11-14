@@ -339,3 +339,67 @@ def test_pause_suppresses_all_gestures_and_releases_held_buttons() -> None:
     assert move_attempt.events == ()
     assert fsm.is_dragging is False
 
+
+def test_gradual_continuous_scrolling_and_directional_reversal() -> None:
+    rules = GestureRules(
+        scroll_stable_ms=30,
+        scroll_deadzone=0.015,
+        scroll_sensitivity=1.0,
+        scroll_release_grace_ms=100,
+    )
+    fsm = GestureStateManager(rules=rules)
+
+    # Enter scrolling at y=0.50
+    fsm.update(_features(scroll_pose=True, scroll_point=NormalizedPoint(0.5, 0.50)), timestamp_ms=0)
+    fsm.update(_features(scroll_pose=True, scroll_point=NormalizedPoint(0.5, 0.50)), timestamp_ms=40)
+    assert fsm.is_scrolling is True
+
+    # Gradually move hand upward by 0.01 every frame for 10 frames (total dy = -0.10)
+    total_up_steps = 0
+    for i in range(1, 11):
+        y = 0.50 - i * 0.01
+        res = fsm.update(
+            _features(scroll_pose=True, scroll_point=NormalizedPoint(0.5, y)),
+            timestamp_ms=40 + i * 30,
+        )
+        for ev in res.events:
+            if ev.gesture == GestureType.SCROLL_MOVE:
+                total_up_steps += ev.scroll_delta
+
+    # Hysteresis anchor ensures small continuous movements across frames accumulate and emit steps
+    assert total_up_steps > 0
+
+    # Momentary 1-frame dropout within grace window (< 100ms) does NOT exit scroll mode
+    dropout = fsm.update(_features(scroll_pose=False, scroll_point=None), timestamp_ms=400)
+    assert fsm.is_scrolling is True
+    assert dropout.scrolling is True
+    assert [e.gesture for e in dropout.events] == []
+
+    # Pose returns before grace expires -> scrolling continues
+    resumed_pose = fsm.update(
+        _features(scroll_pose=True, scroll_point=NormalizedPoint(0.5, 0.38)),
+        timestamp_ms=450,
+    )
+    assert fsm.is_scrolling is True
+
+    # Now move downward past anchor -> emits negative steps (scroll down)
+    down_steps = 0
+    for i in range(1, 10):
+        y = 0.38 + i * 0.02
+        res = fsm.update(
+            _features(scroll_pose=True, scroll_point=NormalizedPoint(0.5, y)),
+            timestamp_ms=450 + i * 30,
+        )
+        for ev in res.events:
+            if ev.gesture == GestureType.SCROLL_MOVE:
+                down_steps += ev.scroll_delta
+
+    assert down_steps < 0
+
+    # Sustained release past grace period exits with SCROLL_END
+    fsm.update(_features(scroll_pose=False, scroll_point=None), timestamp_ms=800)
+    final_exit = fsm.update(_features(scroll_pose=False, scroll_point=None), timestamp_ms=950)
+    assert fsm.is_scrolling is False
+    assert GestureType.SCROLL_END in [e.gesture for e in final_exit.events]
+
+

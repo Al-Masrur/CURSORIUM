@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 from typing import Any
 
@@ -10,16 +11,31 @@ from input_control.backend import InputBackend
 
 logger = logging.getLogger(__name__)
 
+_WINDOWS_WHEEL_DELTA = 120
+
 
 class DesktopInputBackend(InputBackend):
     """Executes real OS cursor movement, clicks, and button holds via PyAutoGUI."""
 
-    def __init__(self, pyautogui_module: Any | None = None) -> None:
+    def __init__(
+        self,
+        pyautogui_module: Any | None = None,
+        wheel_multiplier: int | None = None,
+    ) -> None:
         self._lock = threading.Lock()
         self._pyautogui = pyautogui_module
         self._configured = False
         self._held_buttons: set[str] = set()
         self._cached_screen_size: tuple[int, int] | None = None
+        if wheel_multiplier is not None:
+            self._wheel_multiplier = int(wheel_multiplier)
+        else:
+            self._wheel_multiplier = _WINDOWS_WHEEL_DELTA if sys.platform == "win32" else 1
+
+    @property
+    def wheel_multiplier(self) -> int:
+        """Multiplier applied to discrete scroll clicks (120 per click on Windows)."""
+        return self._wheel_multiplier
 
     def _get_api(self) -> Any:
         if self._pyautogui is None:
@@ -83,7 +99,8 @@ class DesktopInputBackend(InputBackend):
             if clicks == 0:
                 return
             api = self._get_api()
-            api.scroll(clicks=int(clicks), _pause=False)
+            scaled_clicks = int(clicks) * self._wheel_multiplier
+            api.scroll(clicks=scaled_clicks, _pause=False)
 
     def release_all(self) -> None:
         with self._lock:

@@ -68,6 +68,7 @@ class GestureStateManager:
         self._cooldown_until_ms: int = 0
         self._tracking_lost_since_ms: int | None = None
         self._scroll_candidate_since_ms: int | None = None
+        self._scroll_lost_since_ms: int | None = None
         self._scroll_anchor_y: float = 0.5
         self._scroll_accumulator: float = 0.0
         self._open_palm_since_ms: int | None = None
@@ -153,6 +154,7 @@ class GestureStateManager:
         self._cooldown_until_ms = 0
         self._tracking_lost_since_ms = None
         self._scroll_candidate_since_ms = None
+        self._scroll_lost_since_ms = None
         self._scroll_anchor_y = 0.5
         self._scroll_accumulator = 0.0
         self._open_palm_since_ms = None
@@ -184,6 +186,22 @@ class GestureStateManager:
                         cursor_should_move=False,
                         dragging=True,
                         scrolling=False,
+                    )
+            if self._state == GestureFSMState.SCROLLING and (
+                self._rules.scroll_release_grace_ms > 0 or self._rules.tracking_loss_grace_ms > 0
+            ):
+                grace = max(self._rules.scroll_release_grace_ms, self._rules.tracking_loss_grace_ms)
+                if self._scroll_lost_since_ms is None:
+                    self._scroll_lost_since_ms = timestamp_ms
+                if timestamp_ms - self._scroll_lost_since_ms < grace:
+                    return StateUpdate(
+                        state=self._state,
+                        active_pinch=PinchType.NONE,
+                        events=(),
+                        cursor_should_move=False,
+                        dragging=False,
+                        scrolling=True,
+                        scroll_delta=0,
                     )
             events = self.reset(timestamp_ms=timestamp_ms, reason="tracking_lost")
             return StateUpdate(
@@ -358,6 +376,7 @@ class GestureStateManager:
                 self._scroll_anchor_y = features.scroll_point.y
                 self._scroll_accumulator = 0.0
                 self._scroll_candidate_since_ms = None
+                self._scroll_lost_since_ms = None
                 events.append(GestureEvent(GestureType.SCROLL_START, timestamp_ms))
                 return StateUpdate(
                     self._state,
@@ -382,8 +401,23 @@ class GestureStateManager:
         events: list[GestureEvent],
     ) -> StateUpdate:
         if not features.scroll_pose or features.scroll_point is None:
+            if self._rules.scroll_release_grace_ms > 0:
+                if self._scroll_lost_since_ms is None:
+                    self._scroll_lost_since_ms = timestamp_ms
+                if timestamp_ms - self._scroll_lost_since_ms < self._rules.scroll_release_grace_ms:
+                    return StateUpdate(
+                        state=self._state,
+                        active_pinch=PinchType.NONE,
+                        events=tuple(events),
+                        cursor_should_move=False,
+                        dragging=False,
+                        scrolling=True,
+                        scroll_delta=0,
+                    )
+
             self._state = GestureFSMState.IDLE
             self._scroll_candidate_since_ms = None
+            self._scroll_lost_since_ms = None
             events.append(
                 GestureEvent(
                     GestureType.SCROLL_END,
@@ -401,13 +435,26 @@ class GestureStateManager:
                 scrolling=False,
             )
 
+        self._scroll_lost_since_ms = None
         current_y = features.scroll_point.y
         dy = current_y - self._scroll_anchor_y
         delta_steps = 0
         if abs(dy) > self._rules.scroll_deadzone:
-            excess = dy - (self._rules.scroll_deadzone if dy > 0 else -self._rules.scroll_deadzone)
+            if dy > self._rules.scroll_deadzone:
+                excess = dy - self._rules.scroll_deadzone
+                self._scroll_anchor_y += excess
+            else:
+                excess = dy + self._rules.scroll_deadzone
+                self._scroll_anchor_y += excess
+
+            # Reset fractional accumulator if direction reversed
+            step_dir = -1.0 if excess > 0 else 1.0
+            if (self._scroll_accumulator > 0 and step_dir < 0) or (
+                self._scroll_accumulator < 0 and step_dir > 0
+            ):
+                self._scroll_accumulator = 0.0
+
             self._scroll_accumulator += -excess * self._rules.scroll_sensitivity * 30.0
-            self._scroll_anchor_y = current_y
             delta_steps = int(self._scroll_accumulator)
             if delta_steps != 0:
                 self._scroll_accumulator -= delta_steps

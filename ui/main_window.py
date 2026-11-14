@@ -33,8 +33,8 @@ class MainWindow(QMainWindow):
     ) -> None:
         super().__init__(parent)
         self._controller = controller
-        self.setWindowTitle("HandPilot — Phase 4 (Mouse, Scroll & Pause Controls)")
-        self.resize(1020, 840)
+        self.setWindowTitle("HandPilot — Windows Hand-Gesture Controller (MVP)")
+        self.resize(1040, 850)
 
         self._build_ui()
         self._connect_signals()
@@ -206,6 +206,11 @@ class MainWindow(QMainWindow):
         scroll_layout.addLayout(scroll_sens_box, stretch=1)
         scroll_layout.addLayout(deadzone_box, stretch=1)
 
+        self.save_settings_button = QPushButton("Save Settings", scroll_group)
+        self.reset_defaults_button = QPushButton("Reset Defaults", scroll_group)
+        scroll_layout.addWidget(self.save_settings_button)
+        scroll_layout.addWidget(self.reset_defaults_button)
+
         # Primary status row
         status_layout = QHBoxLayout()
         status_layout.setSpacing(14)
@@ -245,6 +250,9 @@ class MainWindow(QMainWindow):
             central,
         )
         self.notice_label.setStyleSheet("color: #94a3b8;")
+        if self._controller.config_notice:
+            self.notice_label.setText(self._controller.config_notice)
+            self.notice_label.setStyleSheet("color: #facc15; font-weight: 500;")
 
         self.error_label = QLabel("", central)
         self.error_label.setWordWrap(True)
@@ -287,6 +295,8 @@ class MainWindow(QMainWindow):
         self.double_click_slider.valueChanged.connect(self._on_double_click_changed)
         self.scroll_sensitivity_slider.valueChanged.connect(self._on_scroll_sensitivity_changed)
         self.scroll_deadzone_slider.valueChanged.connect(self._on_scroll_deadzone_changed)
+        self.save_settings_button.clicked.connect(self._on_save_settings_clicked)
+        self.reset_defaults_button.clicked.connect(self._on_reset_defaults_clicked)
 
         self.escape_shortcut.activated.connect(self._controller.emergency_stop)
         self.pause_shortcut.activated.connect(self._controller.toggle_pause)
@@ -523,6 +533,22 @@ class MainWindow(QMainWindow):
         self.notice_label.setText("Calibration reset to default active region (15% margin).")
 
     @Slot()
+    def _on_save_settings_clicked(self) -> None:
+        if self._controller.save_settings():
+            self.notice_label.setText("Settings successfully saved to local configuration file.")
+            self.notice_label.setStyleSheet("color: #4ade80; font-weight: 500;")
+        else:
+            self.notice_label.setText("Failed to save settings.")
+            self.notice_label.setStyleSheet("color: #f87171; font-weight: 500;")
+
+    @Slot()
+    def _on_reset_defaults_clicked(self) -> None:
+        self._controller.reset_settings_to_defaults()
+        self._sync_initial_state()
+        self.notice_label.setText("All settings restored to factory defaults.")
+        self.notice_label.setStyleSheet("color: #38bdf8; font-weight: 500;")
+
+    @Slot()
     def _on_preview_available(self) -> None:
         item = self._controller.pop_latest_preview()
         if item is None:
@@ -589,7 +615,8 @@ class MainWindow(QMainWindow):
             self.action_status_label.setText("Action: None")
 
         self.fps_label.setText(
-            f"Camera: {result.camera_fps:.1f} FPS | Tracking: {result.tracking_fps:.1f} FPS"
+            f"Camera: {result.camera_fps:.1f} FPS | Tracking: {result.tracking_fps:.1f} FPS | "
+            f"Latency: {result.latency_ms:.0f} ms | Drops: {result.dropped_frames}"
         )
 
     @Slot(object)

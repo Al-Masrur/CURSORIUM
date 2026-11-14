@@ -1,12 +1,51 @@
-"""Validated configuration defaults for HandPilot."""
+"""Validated configuration defaults and JSON persistence for HandPilot."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+import logging
+import os
+import sys
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
+logger = logging.getLogger(__name__)
+
+def resolve_default_model_path() -> Path:
+    """Locate bundled or development MediaPipe hand landmarker model."""
+    candidates = []
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidates.append(Path(meipass) / "assets" / "models" / "hand_landmarker.task")
+        candidates.append(Path(sys.executable).parent / "_internal" / "assets" / "models" / "hand_landmarker.task")
+        candidates.append(Path(sys.executable).parent / "assets" / "models" / "hand_landmarker.task")
+    candidates.append(Path(__file__).resolve().parent.parent / "assets" / "models" / "hand_landmarker.task")
+    candidates.append(Path.cwd() / "assets" / "models" / "hand_landmarker.task")
+
+    for c in candidates:
+        if c.is_file():
+            return c
+    return candidates[0]
+
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_MODEL_PATH = PROJECT_ROOT / "assets" / "models" / "hand_landmarker.task"
+DEFAULT_MODEL_PATH = resolve_default_model_path()
+
+
+def get_default_config_dir() -> Path:
+    """Return platform-specific user application config directory for HandPilot."""
+    app_data = os.environ.get("APPDATA")
+    if sys.platform.startswith("win") and app_data:
+        base = Path(app_data)
+    else:
+        base = Path.home() / ".config"
+    return base / "HandPilot"
+
+
+def get_default_config_path() -> Path:
+    """Return default path to user config.json."""
+    return get_default_config_dir() / "config.json"
 
 
 @dataclass(slots=True)
@@ -116,3 +155,75 @@ class AppConfig:
             raise ValueError("pause_hold_ms must be >= 100")
         if self.pause_cooldown_ms < 100:
             raise ValueError("pause_cooldown_ms must be >= 100")
+
+    def to_dict(self) -> dict:
+        """Convert configuration to a JSON-serializable dictionary."""
+        data = asdict(self)
+        data["model_path"] = str(self.model_path)
+        # Security: OS input is never saved enabled
+        data["os_input_enabled"] = False
+        return data
+
+    @classmethod
+    def from_dict(cls, data: dict) -> AppConfig:
+        """Instantiate AppConfig from a dictionary, ignoring unknown fields."""
+        valid_keys = {f.name for f in fields(cls)}
+        filtered = {k: v for k, v in data.items() if k in valid_keys}
+        if "model_path" in filtered and filtered["model_path"]:
+            filtered["model_path"] = Path(filtered["model_path"])
+        # Safety gate: always start with OS input disabled
+        filtered["os_input_enabled"] = False
+        return cls(**filtered)
+
+
+def save_config(config: AppConfig, path: Path | None = None) -> bool:
+    """Atomically save AppConfig to JSON file. Returns True on success."""
+    target_path = Path(path) if path is not None else get_default_config_path()
+    try:
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = target_path.with_suffix(".tmp")
+        payload = json.dumps(config.to_dict(), indent=2)
+        tmp_path.write_text(payload, encoding="utf-8")
+        tmp_path.replace(target_path)
+        logger.info("Saved configuration to '%s'", target_path)
+        return True
+    except Exception as exc:
+        logger.warning("Failed to save configuration to '%s': %s", target_path, exc)
+        return False
+
+
+def load_config(path: Path | None = None) -> tuple[AppConfig, str | None]:
+    """Load configuration from JSON file.
+
+    Returns:
+        (AppConfig, notice_message): A valid AppConfig object and an optional
+        user-facing notice string if a fallback occurred.
+    """
+    target_path = Path(path) if path is not None else get_default_config_path()
+    if not target_path.is_file():
+        return (AppConfig(), None)
+
+    try:
+        content = target_path.read_text(encoding="utf-8")
+        data = json.loads(content)
+        if not isinstance(data, dict):
+            raise ValueError("Config root must be a JSON object")
+        cfg = AppConfig.from_dict(data)
+        logger.info("Loaded configuration from '%s'", target_path)
+        return (cfg, None)
+    except Exception as exc:
+        msg = f"Invalid config file at '{target_path}' ({exc}). Restored safe default settings."
+        logger.warning(msg)
+        default_cfg = AppConfig()
+        try:
+            save_config(default_cfg, target_path)
+        except Exception:
+            pass
+        return (default_cfg, msg)
+
+
+def reset_config_to_defaults(path: Path | None = None) -> AppConfig:
+    """Overwrite config file with defaults and return fresh AppConfig."""
+    default_cfg = AppConfig()
+    save_config(default_cfg, path)
+    return default_cfg

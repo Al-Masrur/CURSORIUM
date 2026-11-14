@@ -85,3 +85,5 @@ class TrackingResult:
     tracking_fps: float
     error: str | None = None
     cursor_state: CursorState | None = None
+    latency_ms: float = 0.0
+    dropped_frames: int = 0

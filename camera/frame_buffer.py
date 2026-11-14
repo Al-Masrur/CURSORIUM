@@ -71,6 +71,11 @@ class LatestFrameBuffer:
             return self._dropped_count
 
     @property
+    def dropped_frames(self) -> int:
+        """Alias for dropped_count."""
+        return self.dropped_count
+
+    @property
     def is_closed(self) -> bool:
         with self._condition:
             return self._closed

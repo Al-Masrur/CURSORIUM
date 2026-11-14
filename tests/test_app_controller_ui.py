@@ -529,3 +529,50 @@ def test_phase4_scroll_pause_controls_and_ui(qt_app: QApplication) -> None:
 
     window.close()
     qt_app.processEvents()
+
+
+def test_phase5_settings_persistence_and_reset_in_ui(qt_app: QApplication, tmp_path) -> None:
+    test_cfg_path = tmp_path / "ui_config.json"
+    config = AppConfig(
+        cursor_sensitivity=1.5,
+        cursor_smoothing=0.40,
+        scroll_sensitivity=1.8,
+    )
+    mock_backend = MockInputBackend(screen_width=1920, screen_height=1080)
+    capture = _MockCapture(opened=True)
+    landmarker = _ControllableLandmarker()
+
+    controller = AppController(
+        config=config,
+        config_path=test_cfg_path,
+        config_notice="Restored default settings due to corrupt file.",
+        capture_factory=lambda _idx: capture,
+        landmarker_factory=lambda: landmarker,
+        input_backend=mock_backend,
+        escape_key_checker=lambda: False,
+    )
+    window = MainWindow(controller=controller)
+    window.show()
+    qt_app.processEvents()
+
+    # Verify notice displayed on startup
+    assert "Restored default settings" in window.notice_label.text()
+
+    # Change sensitivity and save
+    window.sensitivity_slider.setValue(22)
+    qt_app.processEvents()
+    window.save_settings_button.click()
+    qt_app.processEvents()
+
+    assert test_cfg_path.is_file()
+    assert "successfully saved" in window.notice_label.text().lower()
+
+    # Reset to defaults
+    window.reset_defaults_button.click()
+    qt_app.processEvents()
+    assert abs(controller.config.cursor_sensitivity - 1.0) < 1e-4
+    assert window.sensitivity_value_label.text() == "1.0x"
+    assert "restored to factory defaults" in window.notice_label.text().lower()
+
+    window.close()
+    qt_app.processEvents()

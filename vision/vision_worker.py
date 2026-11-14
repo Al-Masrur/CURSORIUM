@@ -140,12 +140,17 @@ class VisionWorker:
                     fps_window_start = now
                     fps_frame_count = 0
 
+                now_ms = time.monotonic_ns() // 1_000_000
+                latency_ms = max(0.0, float(now_ms - packet.timestamp_ms))
+
                 result = TrackingResult(
                     timestamp_ms=packet.timestamp_ms,
                     hand_detected=detection is not None,
                     detection=detection,
                     camera_fps=self._camera_fps_provider(),
                     tracking_fps=tracking_fps,
+                    latency_ms=latency_ms,
+                    dropped_frames=getattr(self._frame_buffer, "dropped_count", 0),
                 )
                 if self._on_result is not None:
                     self._on_result(frame_rgb, result)

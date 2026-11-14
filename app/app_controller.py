@@ -13,7 +13,7 @@ from dataclasses import replace
 import numpy as np
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
-from app.config import AppConfig
+from app.config import AppConfig, reset_config_to_defaults, save_config
 from app.events import (
     CameraStatus,
     ControlMode,
@@ -65,6 +65,8 @@ class AppController(QObject):
     def __init__(
         self,
         config: AppConfig | None = None,
+        config_path: Path | None = None,
+        config_notice: str | None = None,
         capture_factory: CaptureFactory | None = None,
         landmarker_factory: Callable[[], HandLandmarkerService] | None = None,
         input_backend: InputBackend | None = None,
@@ -73,6 +75,8 @@ class AppController(QObject):
     ) -> None:
         super().__init__(parent)
         self._config = config or AppConfig()
+        self._config_path = config_path
+        self._config_notice = config_notice
         self._frame_buffer = LatestFrameBuffer()
         self._escape_key_checker = escape_key_checker or is_windows_escape_pressed
 
@@ -193,6 +197,33 @@ class AppController(QObject):
     def latest_cursor_state(self) -> CursorState:
         with self._state_lock:
             return self._latest_cursor_state
+
+    @property
+    def config_path(self) -> Path | None:
+        return self._config_path
+
+    @property
+    def config_notice(self) -> str | None:
+        return self._config_notice
+
+    def save_settings(self, path: Path | None = None) -> bool:
+        """Persist current configuration to local JSON."""
+        target_path = path or self._config_path
+        return save_config(self._config, target_path)
+
+    def reset_settings_to_defaults(self) -> AppConfig:
+        """Reset config to defaults and update live controller parameters."""
+        new_cfg = reset_config_to_defaults(self._config_path)
+        self._config = new_cfg
+        self.set_sensitivity(new_cfg.cursor_sensitivity)
+        self.set_smoothing(new_cfg.cursor_smoothing)
+        self.set_pinch_thresholds(new_cfg.pinch_activate_ratio, new_cfg.pinch_release_ratio)
+        self.set_drag_hold_ms(new_cfg.drag_hold_ms)
+        self.set_double_click_interval_ms(new_cfg.double_click_interval_ms)
+        self.set_scroll_sensitivity(new_cfg.scroll_sensitivity)
+        self.set_scroll_deadzone(new_cfg.scroll_deadzone)
+        self.reset_calibration()
+        return new_cfg
 
     @property
     def is_paused(self) -> bool:
